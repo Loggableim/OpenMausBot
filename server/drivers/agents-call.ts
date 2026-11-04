@@ -76,7 +76,8 @@ function assignmentLine(a: Json): string {
     : typeof a.botId === "string" && a.botId ? a.botId : "a teammate";
   const status = String(a.status ?? "unknown");
   const outcome = typeof a.outcome === "string" && a.outcome && a.outcome !== "done" && a.outcome !== status ? ` (${a.outcome})` : "";
-  const detail = typeof a.outcomeDetail === "string" && a.outcomeDetail.trim() ? `: ${a.outcomeDetail.trim()}` : "";
+  const detail = typeof a.outcomeDetail === "string" && a.outcomeDetail.trim() ? `: ${a.outcomeDetail.trim()}`
+    : typeof a.waiting === "string" && a.waiting ? `: ${a.waiting}` : "";
   return `${id} → ${who}: ${STATUS_WORDS[status] ?? status}${outcome}${detail}`;
 }
 
@@ -385,7 +386,8 @@ export async function callTool(called: string, input: Json, context: ToolCallCon
       const state = stateWord[String(thread.state)] ?? String(thread.state);
       const unread = thread.unread === true ? ", unread for the person" : "";
       const handoff = typeof thread.delegationId === "string" && thread.delegationId ? ` [delegation id: ${thread.delegationId}]` : "";
-      return `- #${String(thread.title)} (${where}, ${state}${unread}) [thread id: ${String(thread.threadId)}]${handoff}`;
+      const waiting = typeof thread.waiting === "string" && thread.waiting ? `: ${thread.waiting}` : "";
+      return `- #${String(thread.title)} (${where}, ${state}${waiting}${unread}) [thread id: ${String(thread.threadId)}]${handoff}`;
     });
     return { text: `Threads, newest first:\n${lines.join("\n")}` };
   }
@@ -405,6 +407,13 @@ export async function callTool(called: string, input: Json, context: ToolCallCon
     const body: Record<string, unknown> = { fromBotId: BOT_ID, fromThreadId: THREAD_ID, title, message, depth: DEPTH };
     if (toBotId) body.toBotId = toBotId;
     if (folder) body.folder = folder;
+    if (args.model_selection !== undefined) {
+      const fields = jsonRecord(args.model_selection) ? args.model_selection : null;
+      if (!fields || typeof fields.instanceId !== "string" || !fields.instanceId.trim() || typeof fields.model !== "string" || !fields.model.trim()) {
+        return { text: "start_thread model_selection needs instanceId and model.", isError: true };
+      }
+      body.modelSelection = { instanceId: fields.instanceId.trim(), model: fields.model.trim() };
+    }
     const r = await api("/api/internal/threads", { method: "POST", body: JSON.stringify(body) });
     if (r.error && r.state !== "failed") return { text: `Couldn't open that thread: ${String(r.error)}`, isError: true };
     const receipt = r.self !== true && Array.isArray(r.receipts) && jsonRecord(r.receipts[0]) ? r.receipts[0] : undefined;

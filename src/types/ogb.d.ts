@@ -122,6 +122,8 @@ const __APP_VERSION__: string;
       app?: { version: string; ownPage: boolean };
       organization?: import("../../electron/managed-desktop.mjs").ManagedDesktopBridge;
       cloudAccount?: import("../../electron/cloud-account.mjs").CloudAccountBridge;
+      accounts?: import("../../electron/cloud-account.mjs").AccountsBridge;
+      accountSheet?: import("../../electron/cloud-account.mjs").AccountSheetBridge;
       /** Either page in this app: the one-time move's line (on its way, what arrived, coming home). */
       cloudSendPage?: import("../../electron/cloud-send.mjs").CloudSendPageBridge;
       /** This computer's page only: bots in two places, and the one tap that brings them together on one (electron/two-places.mjs). */
@@ -413,7 +415,7 @@ const __APP_VERSION__: string;
       openAtLogin?: { state(): Promise<{ available: boolean; on: boolean }>; set(on: boolean): Promise<{ available: boolean; on: boolean }> };
       /** Save a provider credential through Electron's OS-backed store. */
       setCredential?(
-        name: "composioApiKey" | "xaiApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "fishAudioKey" | "jevApiKey" | "openrouterDeciderKey" | "workersAiToken" | "openaiImageApiKey" | "customImageApiKey" | "openaiLiveKey" | "tregApiKey" | "postizApiKey",
+        name: "composioApiKey" | "xaiApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "fishAudioKey" | "geminiTtsKey" | "jevApiKey" | "openrouterDeciderKey" | "workersAiToken" | "openaiImageApiKey" | "customImageApiKey" | "openaiLiveKey" | "tregApiKey" | "postizApiKey",
         value: string,
       ): Promise<ConfigStatus>;
       /** In-app auto-update (packaged app only; dormant in dev). Updates

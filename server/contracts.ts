@@ -98,6 +98,8 @@ export interface InstanceConfig {
   icon?: ProviderIcon;
   environment?: Record<string, string>;
   enabled?: boolean;
+  /** Left out of every model list, picker and automatic choice; the engine itself (its CLI and sign-in) is untouched. */
+  hidden?: boolean;
   /** Picker group over the driver's default: an `openai-compat` instance on a provider's own key is "api". */
   access?: EngineAccess;
   config?: unknown;
@@ -532,6 +534,8 @@ export interface ProviderInstance {
   readonly displayName: string | undefined;
   readonly enabled: boolean;
   readonly models: ModelCatalog;
+  /** True while the catalog is the driver's fixed list or a failed read's leftover, not a list the engine gave. */
+  readonly modelsUnconfirmed?: boolean;
   /** False while the sign-in can refuse a model its catalog lists (Codex on a ChatGPT account): a short message and background text then stay on the bot's own model. */
   readonly quickModelsUsable?: () => boolean;
   /** Refresh a live catalog without recreating the provider instance. */

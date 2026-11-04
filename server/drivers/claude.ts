@@ -8,7 +8,7 @@ import { join, dirname, isAbsolute, normalize } from "node:path";
 
 import { DATA_DIR, stripWorkspaceCredentialEnv } from "../config.ts";
 import { openStartupModelCatalog, unconfirmedModelCatalog, writeStartupModelCache } from "../startup-model-catalog.ts";
-import { writeFileAtomic, writeFileAtomicIfChanged } from "../atomic.ts";
+import { writeFileAtomicIfChanged } from "../atomic.ts";
 import { augmentedPath } from "../env-path.ts";
 import { brokerSocketPath, cliVersionReader, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 import { claudeAuthStatus } from "./claude-auth-status.ts";
@@ -18,6 +18,8 @@ import { claudeBilling, claudeCallUsage } from "./claude-billing.ts";
 import { claudeAuthFailure, claudeAuthRecovery } from "./claude-auth-recovery.ts";
 import { claudeModelExtras } from "./claude-model-extras.ts";
 import { claudeToolSearchSetting } from "./claude-tool-search.ts";
+import { claudeElicitations } from "./claude-elicitation.ts";
+import { readCostHistory, recordCostState } from "./claude-cost-history.ts";
 import { classifyResumeFailure, mayReplay, rebuiltSessionNotice, recoveryPromptFor } from "../resume-recovery.ts";
 import { ClaudeLoginController } from "./claude-login-auth.ts";
 
@@ -416,15 +418,16 @@ export function hookTokenFile(threadId: string, botId?: string): string {
   return join(DATA_DIR, "hook-tokens", digest, "token");
 }
 
-/** Hooks for the private --settings file. Claude Code runs each command as a shell line with the
- * event JSON on stdin and applies any hookSpecificOutput it prints. */
-export function claudeHookSettings(helperPath: string): Record<string, unknown> {
+/** Hooks for the private --settings file. Claude Code runs each command with the event JSON on
+ * stdin and applies any hookSpecificOutput it prints. */
+export function claudeHookSettings(helperPath: string, platform: NodeJS.Platform = process.platform): Record<string, unknown> {
+  // Claude Code runs `command` as a shell line: sh on macOS and Linux; on Windows Git Bash, or PowerShell
+  // when Git Bash is missing, and the two quote differently. Given `args` (2.1.139), it starts `command` itself.
   // JSON quoting is not shell quoting: $(), backticks and $names expand inside double quotes.
-  // Windows paths go through env so their backslashes are not JSON-escaped.
-  const command = process.platform === "win32"
-    ? '"%OMB_HOOK_NODE%" "%OMB_HOOK_HELPER%"'
-    : [process.execPath, helperPath].map(path => `'${path.replace(/'/g, "'\\''")}'`).join(" ");
-  const entry = [{ matcher: "", hooks: [{ type: "command", command, timeout: 5 }] }];
+  const hook = platform === "win32"
+    ? { type: "command", command: process.execPath, args: [helperPath], timeout: 5 }
+    : { type: "command", command: [process.execPath, helperPath].map(path => `'${path.replace(/'/g, "'\\''")}'`).join(" "), timeout: 5 };
+  const entry = [{ matcher: "", hooks: [hook] }];
   return { PostToolUse: entry, PostToolUseFailure: entry, PreCompact: entry, SessionStart: entry, Stop: entry };
 }
 
@@ -709,39 +712,6 @@ export function restoredCostBase(
   return exact ?? inside;
 }
 
-const COST_HISTORY_FILE = join(DATA_DIR, "claude-cost-history.json");
-const COST_HISTORY_SESSIONS = 100;
-const COST_HISTORY_STATES = 8;
-
-function isCostSnapshot(value: unknown): value is ClaudeCostSnapshot {
-  if (!value || typeof value !== "object") return false;
-  const { total, models } = value as { total?: unknown; models?: unknown };
-  return typeof total === "number" && !!models && typeof models === "object" &&
-    Object.values(models).every((counts) => Array.isArray(counts) && counts.length === 4 && counts.every((n) => typeof n === "number"));
-}
-
-function readCostHistory(): Record<string, ClaudeCostSnapshot[]> {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(COST_HISTORY_FILE, "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return Object.fromEntries(Object.entries(parsed).map(([id, states]) => [id, Array.isArray(states) ? states.filter(isCostSnapshot) : []]));
-  } catch {
-    return {};
-  }
-}
-
-function recordCostState(sessionId: string, state: ClaudeCostSnapshot): void {
-  const history = readCostHistory();
-  const states = [...(history[sessionId] ?? []), state].slice(-COST_HISTORY_STATES);
-  delete history[sessionId];
-  history[sessionId] = states;
-  const ids = Object.keys(history);
-  for (const id of ids.slice(0, Math.max(0, ids.length - COST_HISTORY_SESSIONS))) delete history[id];
-  try {
-    writeFileAtomic(COST_HISTORY_FILE, JSON.stringify(history), { mode: 0o600, durable: false });
-  } catch {}
-}
-
 type ClaudeImage = NonNullable<SendTurnInput["images"]>[number];
 type ClaudeUserContent =
   | { type: "image"; source: { type: "base64"; media_type: ClaudeImage["mime"]; data: string } }
@@ -873,6 +843,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     interface Session {
       child: ReturnType<typeof spawnCli>;
       broker?: Awaited<ReturnType<typeof createPermissionBroker>>;
+      elicit: ReturnType<typeof claudeElicitations>;
       mcpConfigPath: string | null;
       systemPromptPath: string | null;
       argsKey: string;
@@ -938,6 +909,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const broker = s.broker;
       s.broker = undefined;
       broker?.close();
+      s.elicit.close();
       appendNative(threadId, { dir: "out", source: "claude.session", msg: { close: why } });
       // stdin EOF is the CLI's exit signal; give it a moment, then insist
       try {
@@ -1190,8 +1162,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         writeFileAtomicIfChanged(hookTokenPath, hooks.token, { mode: 0o600, durable: false });
         env.OMB_HOOK_URL = hooks.url;
         env.OMB_HOOK_TOKEN_FILE = hookTokenPath;
-        env.OMB_HOOK_NODE = process.execPath;
-        env.OMB_HOOK_HELPER = HOOK_HELPER_PATH;
         // in the packaged app process.execPath is Electron — run the helper as node
         if (process.versions.electron) env.ELECTRON_RUN_AS_NODE = "1";
       }
@@ -1381,6 +1351,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         closed: new Promise<void>((resolve) => { markClosed = resolve; }),
         child,
         broker,
+        // A CLI that already exited needs no answer: the write is skipped, like writeUser's.
+        elicit: claudeElicitations((frame) => new Promise<boolean>((resolve) => {
+          const { stdin } = session.child;
+          if (!stdin.writable || stdin.destroyed) return resolve(false);
+          try { stdin.write(`${JSON.stringify(frame)}\n`, (err) => resolve(!err)); } catch { resolve(false); }
+        }),
+          (event) => emit({ ...base(threadId, session.turn?.turnId ?? turnId), ...event })),
         mcpConfigPath,
         systemPromptPath,
         argsKey,
@@ -1468,6 +1445,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         authRecovery.frame(threadId, o, session.costTotal);
         // A replayed stdin message carries its images again: keep their bytes out of the log.
         appendNative(threadId, { dir: "in", source: "claude.sdk.message", msg: o?.type === "user" && o.isReplay === true && o.message ? diagnosticClaudeUserMessage(o) : o });
+        if (session.elicit.frame(o)) return;
         if (session.turn?.continuationSilence && !(o.type === "system" && o.subtype === "init") && !(o.type === "user" && o.isReplay === true)) {
           clearTimeout(session.turn.continuationSilence);
           session.turn.continuationSilence = null;
@@ -1763,6 +1741,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             session.broker = undefined;
             failedBroker?.pause();
             failedBroker?.close();
+            session.elicit.close();
             if (session.mcpConfigPath) {
               try {
                 rmSync(dirname(session.mcpConfigPath), { recursive: true, force: true });
@@ -1842,6 +1821,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             });
             session.broker?.close();
             session.broker = undefined;
+            session.elicit.close();
             if (session.mcpConfigPath) {
               try {
                 rmSync(dirname(session.mcpConfigPath), { recursive: true, force: true });
@@ -1883,6 +1863,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         }
         if (session.idleTimer) clearTimeout(session.idleTimer);
         session.broker?.close();
+        session.elicit.close();
         if (session.mcpConfigPath) {
           try {
             rmSync(dirname(session.mcpConfigPath), { recursive: true, force: true });
@@ -2085,6 +2066,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         steer,
         interruptTurn: async (threadId) => active.get(threadId)?.stop(),
         respondToRequest: async (threadId, requestId, decision) => {
+          const elicited = await sessions.get(threadId)?.elicit.answer(requestId, decision.behavior);
+          if (elicited === "failed") return "unavailable";
+          if (elicited === "sent") return decision.behavior === "allow" ? "allowed-once" : "rejected";
           const broker = sessions.get(threadId)?.broker ?? active.get(threadId)?.broker;
           if (!broker) return "unavailable";
           const behavior = decision.behavior === "answer" ? "answer" : decision.behavior;

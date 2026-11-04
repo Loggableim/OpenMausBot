@@ -92,13 +92,14 @@ const CONTROL_PLANE_FIXTURE = {
 
 describe("ClaudeDriver.decodeConfig", () => {
   it("quotes hook paths as shell data rather than JSON strings", () => {
-    const settings = claudeHookSettings("/tmp/it's $OMB_HOOK_TEST `literal`/helper.ts") as { PostToolUse: Array<{ hooks: Array<{ command: string }> }> };
-    const command = settings.PostToolUse[0]!.hooks[0]!.command;
-    if (process.platform === "win32") {
-      expect(command).toBe('"%OMB_HOOK_NODE%" "%OMB_HOOK_HELPER%"');
-    } else {
-      expect(command).toContain("'/tmp/it'\\''s $OMB_HOOK_TEST `literal`/helper.ts'");
-    }
+    const settings = claudeHookSettings("/tmp/it's $OMB_HOOK_TEST `literal`/helper.ts", "linux") as { PostToolUse: Array<{ hooks: Array<{ command: string }> }> };
+    expect(settings.PostToolUse[0]!.hooks[0]!.command).toContain("'/tmp/it'\\''s $OMB_HOOK_TEST `literal`/helper.ts'");
+  });
+
+  it("starts the hook helper without a shell on Windows, where Git Bash or PowerShell would read the command line", () => {
+    const helper = "C:\\Users\\it's $OMB_HOOK_TEST `literal`\\helper.ts";
+    const settings = claudeHookSettings(helper, "win32") as { PostToolUse: Array<{ hooks: unknown[] }> };
+    expect(settings.PostToolUse[0]!.hooks).toEqual([{ type: "command", command: process.execPath, args: [helper], timeout: 5 }]);
   });
 
   it("hooks failed tool calls too, so a timed-out command can be given a hint", () => {
@@ -1098,6 +1099,35 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await expect(instance.adapter.respondToRequest("no-such-thread", "x", { behavior: "deny" })).resolves.toBe("unavailable");
     await instance.adapter.interruptTurn("t-perm-2");
     await recorder.until((e) => e.type === "turn.completed");
+  });
+
+  it("shows an MCP server's question as an approval card and answers it on stdin", async () => {
+    const log = join(scratch, "control.ndjson");
+    await create("hang", {
+      FAKE_CLAUDE_ELICIT: JSON.stringify({ mcp_server_name: "github", message: "Allow access to your repos?", mode: "form", requested_schema: { type: "object", properties: {} } }),
+      FAKE_CLAUDE_CONTROL_LOG: log,
+    });
+    await instance.adapter.sendTurn({ threadId: "t-elicit", text: "go" });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({ requestId: "elicitation:elicit-1", requestType: "permission", tool: "mcp__github", summary: "github: Allow access to your repos?", requiresExplicitApproval: true });
+    await expect(instance.adapter.respondToRequest("t-elicit", "elicitation:elicit-1", { behavior: "allow" })).resolves.toBe("allowed-once");
+    await vi.waitFor(() => expect(existsSync(log)).toBe(true));
+    expect(JSON.parse(readFileSync(log, "utf8"))).toEqual({ type: "control_response", response: { subtype: "success", request_id: "elicit-1", response: { action: "accept", content: {} } } });
+    await recorder.until((e) => e.type === "request.resolved" && e.requestId === "elicitation:elicit-1");
+    await expect(instance.adapter.respondToRequest("t-elicit", "elicitation:elicit-1", { behavior: "allow" })).resolves.toBe("unavailable");
+    await instance.adapter.interruptTurn("t-elicit");
+    await recorder.until((e) => e.type === "turn.completed");
+  });
+
+  it("withdraws an MCP server's open question when the launch that asked it fails and is retried", async () => {
+    process.env.FAKE_CLAUDE_TRANSIENTS = "1";
+    process.env.FAKE_CLAUDE_STATE = join(scratch, "elicit-launches");
+    process.env.FAKE_CLAUDE_RETRY_SCALE = "0.001";
+    await create(undefined, { FAKE_CLAUDE_ELICIT: JSON.stringify({ mcp_server_name: "github", message: "Allow access?", mode: "form", requested_schema: { type: "object", properties: {} } }) });
+    await instance.adapter.sendTurn({ threadId: "t-elicit-retry", text: "go" });
+    await recorder.until((e) => e.type === "turn.completed" && e.ok === true);
+    expect(recorder.events.filter((e) => e.type === "request.opened").map((e) => e.requestId)).toEqual(["elicitation:elicit-1"]);
+    expect(recorder.events.find((e) => e.type === "request.resolved" && e.requestId === "elicitation:elicit-1")).toMatchObject({ behavior: "deny", source: "system" });
   });
 
   it("sends attached images as native blocks before text without logging their bytes", async () => {
@@ -4236,14 +4266,16 @@ describe("ClaudeDriver snapshot auth (fake CLI)", () => {
     expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: false });
   });
 
-  it("fails closed instead of trusting stale credential storage", async () => {
+  it("leaves an unreadable `auth status` unconfirmed instead of trusting stale credential storage", async () => {
     await create();
 
     process.env.FAKE_CLAUDE_AUTH = "unsupported";
-    expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: false });
+    const unsupported = await instance.snapshot();
+    expect(unsupported.state).toBe("available");
+    expect(unsupported.authenticated).toBeUndefined();
 
     process.env.FAKE_CLAUDE_AUTH = "malformed";
-    expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: false });
+    expect((await instance.snapshot()).authenticated).toBeUndefined();
 
     // The turn strips inherited API keys, so the auth probe must too.
     process.env.FAKE_CLAUDE_AUTH = "inherited-api-key";

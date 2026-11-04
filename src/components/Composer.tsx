@@ -52,9 +52,7 @@ import {
   discardUnsentUpload,
   composerShouldRefocus,
   composerTakesFocusOnOpen,
-  imageAttachmentFromFile,
-  imageSlotsLeft,
-  imagesThatFit,
+  imageAttachmentFromFile, imageBytesLeft, imageSlotsLeft, imagesThatFit,
   replyTargetTakesFocus,
   intakeFiles,
   isLongPaste,
@@ -69,7 +67,7 @@ import { composerPlaceholder, sendLabels, SIMPLE_COMPOSER, SIMPLE_CONTROL, slotC
 import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "./PendingApproval";
 import { CallButton } from "./CallView";
 import { GroupCallButton } from "./GroupCallView";
-import { ApprovalChip, ComposerPlusMenu, GoalToggle } from "./ComposerPlusMenu";
+import { ApprovalChip, ComposerPlusMenu, GoalToggle, TeachTaskButton } from "./ComposerPlusMenu";
 import { PhonePlus } from "./PhonePlus";
 import { useThreadApproval } from "./thread-approval";
 import { useStackedField, useTallPill } from "./composer-wrap";
@@ -95,6 +93,7 @@ import {
   type ComposerSlashCommand,
 } from "@/lib/composer-commands";
 import { useSlashSkills } from "@/lib/use-slash-skills";
+import { randomUuid } from "@/lib/random-uuid";
 
 const supportsAgents = (instances: InstanceInfo[], candidate?: Bot) =>
   Boolean(candidate && instances.find((instance) => instance.instanceId === candidate.modelSelection.instanceId)?.capabilities?.agentsMcp);
@@ -302,13 +301,14 @@ export function Composer({
   const commandCandidates = useMemo(() => {
     if (!slash || slash.start === dismissedSlashAt) return [];
     const available: ComposerSlashCommand[] = [];
-    if (!group?.dm) available.push({
+    const builtIns = slash.start === 0; // Built-in commands only work at the start of a message; skills can be named anywhere.
+    if (builtIns && !group?.dm) available.push({
       kind: "command",
       id: "goal",
       label: "/goal",
       description: t(group ? "composer.command.goalDesc" : "composer.command.goalBotDesc"),
     });
-    if (canLearn) {
+    if (builtIns && canLearn) {
       available.push({
         kind: "command",
         id: "learn",
@@ -316,7 +316,7 @@ export function Composer({
         description: t("composer.command.learnDesc"),
       });
     }
-    if (!group && supportsAgents(state.instances, bot)) available.push({
+    if (builtIns && !group && supportsAgents(state.instances, bot)) available.push({
       kind: "command",
       id: "setup",
       label: "/setup",
@@ -385,7 +385,8 @@ export function Composer({
 
   const pickCommand = (command: ComposerSlashCommand | undefined) => {
     if (!slash || !command) return;
-    const replacement = command.kind === "skill" ? `${command.label} `
+    const spaceAfter = /^\s/.test(text.slice(slash.end)) ? "" : " ";
+    const replacement = command.kind === "skill" ? `${command.label}${spaceAfter}`
       : command.id === "learn" ? "/learn " : command.id === "setup" ? "/setup " : "";
     const next = replaceComposerSlashTrigger(text, slash, replacement);
     editText(next.text);
@@ -402,10 +403,7 @@ export function Composer({
     editText(learn + text.replace(/^\/learn\s*/, "").trimStart());
     setCaret(learn.length);
     setChannelMode("chat");
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      inputRef.current?.setSelectionRange(learn.length, learn.length);
-    });
+    requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(learn.length, learn.length); });
   };
 
   const pendingCount = (state.pendingQueued[threadId] ?? []).length;
@@ -513,6 +511,7 @@ export function Composer({
         getPath: pathForFile,
         uploadImage,
         imageSlots: imageSlotsLeft(attachments),
+        imageBytes: imageBytesLeft(attachments),
       });
       if (added.length) addAttachments(added);
       if (notice) setAttachmentNotice(notice);
@@ -582,7 +581,7 @@ export function Composer({
     const sentDraft: ComposerDraftSnapshot = {
       draftId,
       revision: draftRevision(draftId),
-      sendId: restoredSendId(draftId) ?? crypto.randomUUID(),
+      sendId: restoredSendId(draftId) ?? randomUuid(),
       text,
       requestText: body,
       attachments: [...attachments],
@@ -633,7 +632,7 @@ export function Composer({
         dispatch({ type: "error", message: t("composer.error.clipboardImage") });
         return;
       }
-      const kept = imagesThatFit(imageFiles, imageSlotsLeft(attachments), setAttachmentNotice);
+      const kept = imagesThatFit(imageFiles, imageSlotsLeft(attachments), setAttachmentNotice, imageBytesLeft(attachments));
       changeDraftAttachmentPending(draftId, true);
       void (async () => {
         try {
@@ -766,6 +765,8 @@ export function Composer({
         />
         <QueuedComposerMessages
           items={queuedMessages}
+          oneThreadPerBot={state.config?.cloudStarter === true}
+          onSeePlans={() => dispatch({ type: "toggleAppSettings", open: true, section: "cloudAccount" })}
           onSteer={canSteerQueued ? steerQueued : undefined}
           steerInterrupts={!canSteer}
           steerMode={group ? "next" : "all"}
@@ -790,7 +791,7 @@ export function Composer({
             <PhonePlus
               onAttach={() => fileInput.current?.click()}
               goal={goal}
-              teach={!advanced && canLearn ? teachTask : undefined}
+              teach={canLearn ? teachTask : undefined}
               approval={approvalChoice && modeBot && { name: modeBot.name, choice: approvalChoice }}
               callBotId={bot && !group ? bot.id : undefined}
               place={modeBot && !remoteClient && advanced ? {
@@ -828,6 +829,7 @@ export function Composer({
               >
                 <Paperclip size={16} strokeWidth={1.75} absoluteStrokeWidth />
               </button>}
+              {advanced && canLearn && <TeachTaskButton onClick={teachTask} />}
               {/* Simple mode shows a mode's chip only while it is on, so a choice made in the + menu or the bot panel stays in view. */}
               {goal && (advanced || goal.on) && <GoalToggle {...goal} compact={simpleDock} />}
               {advanced && approvalChoice && <ApprovalModeSelector {...approvalChoice} />}

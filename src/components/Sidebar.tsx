@@ -49,6 +49,7 @@ import {
   PINNED_SECTION_ID,
   PINNED_THREADS_SECTION_ID,
   TOOLS_SECTION_ID,
+  activeBotsFirst,
   partitionSidebarBots,
   partitionSidebarGroups,
   pinnedCircleThreadListVisible,
@@ -72,11 +73,11 @@ import { GlassBar, GlassScrollFrame, GlassScroller } from "./GlassScrollFrame";
 import { DesktopWorkspaceSwitcher, endCloudHowTo } from "./DesktopWorkspaceSwitcher"; import { PlaceTint } from "./PlaceTint"; import { ChromeRailToggle } from "./ChromeRailToggle";
 import { useCloudOwner } from "./CloudOwner";
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
-import { NeedsYouButton, OwnerFace, OwnerPickerHost, pickOwnerOf } from "./TeamOwner"; import { SidebarPeople } from "./SidebarPeople";
+import { NeedsYouButton, OwnerPickerHost, pickOwnerOf } from "./TeamOwner"; import { SidebarPeople } from "./SidebarPeople";
 import { showWhoReportsToWhom, TeamMenuItems } from "./SidebarTeamMenu";
 import { MENU_ITEM, MENU_SHEET } from "./menu-recipe";
 import { ELEVATED_CONTROL } from "./elevated";
-import { departmentOwner, useTeamPeople } from "@/state/team-people";
+import { useTeamPeople } from "@/state/team-people";
 export { TeamMenuItems };
 import { SidebarResizeHandle, useSidebarWidth } from "./SidebarResizeHandle";
 import { PHONE_TOP_BUTTON, SIMPLE_CORNER_BUTTON, SIMPLE_ROW_FOCUS, SIMPLE_TOP_BUTTON, SidebarSearchPill, SidebarSearchToggle } from "./SidebarSimpleTop";
@@ -84,7 +85,7 @@ import { isSidebarToggle } from "@/lib/keyboard-shortcuts";
 import { SidebarRailSeparator, SimpleRailFooter } from "./SidebarSimpleRail";
 import { useShowThreads } from "@/lib/thread-preferences";
 import { useBotUnread } from "./unread-notice";
-import { attentionHasRunningWork, attentionJumpAction, attentionTriggerLabel, attentionUnpinAction, AttentionThreadRows, crossBotAttentionThreads, crossBotPinnedThreads, SidebarBotActivity, sidebarBotActivityTasks, sidebarBotStatus } from "./SidebarBotActivity";
+import { attentionHasRunningWork, attentionJumpAction, attentionTriggerLabel, attentionUnpinAction, AttentionThreadRows, crossBotAttentionThreads, crossBotPinnedThreads, runningRoutineRun, SidebarBotActivity, sidebarBotActivityTasks, sidebarBotStatus } from "./SidebarBotActivity";
 import { SidebarNoBots, SidebarTileGrid } from "./SidebarTiles";
 import { BotContextMenu } from "./SidebarBotMenu";
 export { BotContextMenu };
@@ -816,7 +817,6 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
             </span>
           )}
           {expanded && unread && <span className="size-1.5 shrink-0 rounded-full bg-accent" aria-label={t("task.unreadMany")} />}
-          {!renaming && <span className="flex shrink-0 self-center"><OwnerFace bot={bot} /></span>}
           {simpleRow && (unread || waiting) && <RowDot waiting={waiting} />}
         </div>
         {(!expanded || deleting) && <div className="flex items-center justify-between gap-2">
@@ -913,7 +913,7 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
     {advanced && !iconOnly && threadsOpen && hasThreadList && <BotThreadList {...props} hidden={!showThreads}
       activityLabel={liveActivityLabel(last)}
       query={bot.name.toLowerCase().includes(query.toLowerCase()) || bot.title.toLowerCase().includes(query.toLowerCase()) ? "" : query} />}
-    {(advanced || (!iconOnly && (waiting || unread))) && !expanded && <SidebarBotActivity bot={bot} rowThreadId={selected ? bot.threadId : botOpensTo(bot, showThreads)} density={density} pendingQueued={pendingQueued} dispatch={dispatch} waitingOnly={!advanced} />}
+    {(advanced || (!iconOnly && (waiting || unread || bot.tasks?.some(runningRoutineRun)))) && <SidebarBotActivity bot={bot} rowThreadId={selected ? bot.threadId : botOpensTo(bot, showThreads)} density={density} pendingQueued={pendingQueued} dispatch={dispatch} waitingOnly={!advanced} runsOnly={expanded} />}
     {showThreads && creatingProject && <BotProjectDialog bot={bot} onClose={() => setCreatingProject(false)} />}
     </>
   );
@@ -1108,14 +1108,12 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
   const visibleGroups = state.groups.filter((g) => !q || g.name.toLowerCase().includes(q) || g.tasks?.some((task) => task.title.toLowerCase().includes(q)));
   const viewerEmail = useViewerEmail();
   const parts = partitionSidebarBots(botDrag.preview(matchingBots), { universalPins, viewerEmail, welcoming: useWelcomingBot() });
-  const {
-    primary,
-    unsectionedChief,
-    pinnedBots,
-    sectionChiefs,
-    sectionedBots,
-    unsectionedBots,
-  } = simpleDesk ? withPrimaryTile(parts, myDefaultBot(state.bots, viewerEmail)?.id) : { ...parts, primary: null };
+  const saved = simpleDesk ? withPrimaryTile(parts, myDefaultBot(state.bots, viewerEmail)?.id) : { ...parts, primary: null };
+  // Shown order only: drag and Alt+Up/Down keep working on the saved order, so a reorder never stores this one.
+  const { primary, unsectionedChief, pinnedBots, sectionChiefs, sectionedBots, unsectionedBots } = { ...saved, ...activeBotsFirst(saved, (bot) => {
+    const { waiting, working } = sidebarBotStatus(bot, state.pendingQueued);
+    return waiting || working;
+  }) };
   const { botChats, sectionedRooms, unsectionedRooms } = partitionSidebarGroups(visibleGroups);
 
   const sectionNames: string[] = [...(state.sections ?? []).filter((name) => !q || name.toLowerCase().includes(q.toLowerCase())), ...botDrag.pending];
@@ -1128,7 +1126,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
   for (const group of sectionedRooms) {
     if (!sectionNames.includes(group.section!)) sectionNames.push(group.section!);
   }
-  const drops = botDrag.arrange({ enabled: sections.interactive && !phone, main: unsectionedBots, sectioned: sectionedBots, departments: sectionNames, bots: state.bots, taken: departmentNames(state) });
+  const drops = botDrag.arrange({ enabled: sections.interactive && !phone, main: saved.unsectionedBots, sectioned: saved.sectionedBots, departments: sectionNames, bots: state.bots, taken: departmentNames(state) });
   const naturalSectionIds = [
     ...(pinnedBots.length > 0 && !universalPins && !simpleDesk ? [PINNED_SECTION_ID] : []),
     ...(unsectionedRooms.length > 0 ? [CHANNELS_SECTION_ID] : []),
@@ -1185,7 +1183,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             <MessageSquarePlus size={16} className="text-ink-secondary" />
             {t("sidebar.newChat.title")}
           </button>}
-          <button
+          {teamSettingsAllowed !== false && <button
             onClick={() => { setPlusOpen(false); dispatch({ type: "newBot" }); }}
             role="menuitem"
             className={plusItem}
@@ -1193,7 +1191,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             <BotIcon size={16} className="text-ink-secondary" />
             <span className="flex-1">{advanced ? t("sidebar.newBot") : t("sidebar.newBotSimple")}</span>
             {advanced && <ShortcutHint id="new-bot" />}
-          </button>
+          </button>}
           <button
             onClick={() => {
               setPlusOpen(false);
@@ -1213,14 +1211,14 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             <FolderPlus size={16} className="text-ink-secondary" /> {t("team.create")}
           </button>}
           {!remoteClient && <>
-          <button
+          {teamSettingsAllowed !== false && <button
             onClick={() => { setPlusOpen(false); setTeamLibraryOpen(true); }}
             role="menuitem"
             className={plusItem}
           >
             <Library size={16} className="text-ink-secondary" />
             {t("sidebar.teamLibrary")}
-          </button>
+          </button>}
           {advanced && archivedBots.length > 0 && (
             <button
               onClick={() => {
@@ -1244,7 +1242,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
 
   return (
     <aside
-      ref={sidebarRef}
+      ref={sidebarRef} data-sidebar-root={!phone || open ? "" : undefined}
       tabIndex={-1}
       aria-label={t("sidebar.aria")}
       data-native-view-overlay
@@ -1489,7 +1487,6 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
                 {density !== "icons" && !headless && (
                   <SidebarSectionHeader
                     name={sectionLabel(id)}
-                    lead={sectionName ? departmentOwner([...sectionChiefItems, ...sectionBotItems], teamPeople)?.name : undefined}
                     line={simple}
                     count={simple ? sectionChiefItems.length + sectionBotItems.length + sectionGroupItems.length : undefined}
                     onMenu={simple && !remoteClient && sectionName ? (button) => {
@@ -1678,7 +1675,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           anchor={sidebarRef.current}
           style={windowNoDragStyle}
           onClose={() => setNewChatOpen(false)}
-          onNewBot={() => { setNewChatOpen(false); dispatch({ type: "newBot" }); }}
+          onNewBot={teamSettingsAllowed === false ? undefined : () => { setNewChatOpen(false); dispatch({ type: "newBot" }); }}
           onNewGroup={() => { setNewChatOpen(false); setNewRoom(true); }}
         />,
         document.body,

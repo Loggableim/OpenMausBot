@@ -587,8 +587,18 @@ test("signed out, a team shows the sign-in screen with its name; the Admin refus
   assert.deepEqual(w.remembers.at(-1), null);
   const problem = world({ state: { ...connected(), teams: [{ ...ACME, machine: { status: "stopped", hold: { until: 9 } } }] } });
   await problem.home.show({ place: { team: "team-acme" } });
-  assert.deepEqual(problem.home.view(), { screen: "plan", machine: "stopped", name: "Acme" }, "a team's Cloud that ended: its plan screen, by name");
+  assert.deepEqual(problem.home.view(), { screen: "plan", machine: "stopped", name: "Acme", member: true }, "a team's Cloud that ended: its plan screen, by name");
   assert.deepEqual(problem.teamPairs, []);
+  const stoppedFor = async (role, machine) => {
+    const seen = world({ state: { ...connected(), teams: [{ ...ACME, role, machine }] } });
+    await seen.home.show({ place: { team: "team-acme" } });
+    return seen.home.view();
+  };
+  for (const machine of [{ status: "stopped", hold: { until: 9 } }, { status: "payment-problem" }, { status: "stopped", origin: TEAM }, { status: "payment-problem", origin: TEAM }]) {
+    assert.deepEqual(await stoppedFor("member", machine), { screen: "plan", machine: machine.status, name: "Acme", member: true }, "a team's User is sent to its owner");
+    for (const role of ["owner", "admin"]) assert.equal((await stoppedFor(role, machine)).member, undefined, role);
+  }
+  assert.equal((await stoppedFor("member", null)).member, true, "no machine at all: stopped, for a User too");
 });
 
 test("on the team's page, a session that ends is renewed through the team pairing, the page counts as this app's, and its new version reloads at a quiet moment", async () => {
@@ -845,4 +855,16 @@ test("another Cloud the Admin says is no longer theirs is dropped at once and My
   await setup.home.show({ place: { cloud: "c-a" } });
   assert.deepEqual(setup.home.view(), { screen: "setup", step: "starting", name: "Client A" });
   assert.deepEqual(setup.ownPairs, [], "never paired while it is set up");
+});
+
+test("an account leaving: nothing under way for it goes on, and the next show takes the window off its place", async () => {
+  const w = world({ journal: null, state: { status: "signed-out" }, url: `${CLOUD}/` });
+  w.home.accountLeaving();
+  assert.equal(w.home.shown(), null);
+  await w.home.show();
+  assert.deepEqual(w.local, [true], "the window showed that account's Cloud: this computer's page now");
+  const here = world({ journal: null, state: { status: "signed-out" }, url: `${LOCAL}/` });
+  here.home.accountLeaving();
+  await here.home.show();
+  assert.deepEqual(here.local, [false], "already on this computer's page: nothing moves");
 });

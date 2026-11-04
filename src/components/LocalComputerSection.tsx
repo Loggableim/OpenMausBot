@@ -522,12 +522,12 @@ export function LocalVmInventoryCard({
       subtitle={t("vm.perBot.subtitle", {
         count: unavailableReason
           ? t("vm.perBot.inventoryUnavailable")
-          : t("vm.perBot.created", { count: instances.length, max: maxInstances }),
+          : t("vm.perBot.running", { count: instances.filter(instance => instance.container === "running").length, max: maxInstances }),
       })}
     >
       <div className="flex items-center justify-between gap-3">
         <div className="text-[12px] text-ink-secondary">
-          {t("vm.perBot.deleteHint")}
+          {t("vm.perBot.parkingHint")}
         </div>
         <button
           type="button"

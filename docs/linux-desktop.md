@@ -302,3 +302,19 @@ If it prints `No suitable fusermount binary found on the $PATH` or `Cannot mount
 setup`, install the distribution's FUSE 3 package (`fuse3` on Ubuntu, Debian and Arch). If it then names a missing
 `lib*.so` file, install the desktop libraries listed under
 [Arch Linux and EndeavourOS](#arch-linux-and-endeavouros-appimage), or your distribution's packages for them.
+
+## Private desktop capacity
+
+In `per-bot` mode, `localVm.maxInstances` limits running desktops, including
+ones started through the bot settings. Stopped containers keep their private
+files, browser profiles and installed applications and do not consume an active
+slot. At capacity, a new or resumed desktop parks an unused managed desktop.
+Active turns, desktop leases, human control and lifecycle operations protect a
+desktop from parking. If every slot is busy, turn setup waits up to 90 seconds;
+a manual start returns HTTP 409 so it can be retried.
+
+For a six-slot installation, keep `mode: "per-bot"` and set `maxInstances: 6`.
+The existing idle timeout still applies. No shared pool seats are used. Parking
+stops programs; saved data remains, but unsaved application state is not kept.
+An image upgrade leaves previously parked private desktops inactive; they are
+created from their preserved workspace on demand.

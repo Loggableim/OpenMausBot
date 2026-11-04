@@ -165,7 +165,7 @@ describe("Local VM inventory UI", () => {
       onDelete: vi.fn(),
     }));
 
-    expect(markup).toContain("2/4 created");
+    expect(markup).toContain("1/4 active");
     expect(markup).toContain("Current destination: Cloud");
     expect(markup).toContain("Current destination: Off");
     expect(markup).toContain("In use");

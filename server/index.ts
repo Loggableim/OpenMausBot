@@ -420,6 +420,7 @@ import { localVmStopReason, recordLocalVmIdleStop } from "./local-vm-stop-reason
 import { ComputerIdleTimer } from "./computer-idle.ts";
 import { CLOUD_COMPUTER_DID_NOT_START, CLOUD_COMPUTER_START_BUDGET_MS, CLOUD_COMPUTER_STARTING, createCloudComputerPower } from "./host/cloud-computer-power.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
+import { LocalVmCapacity, LocalVmCapacityBusy } from "./local-vm-capacity.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
 import { createLoopGuard, loopGuardSettings } from "./host/loop-guard.ts"; import { createPersonFirst } from "./host/person-first.ts";
 import { claudeUserSkillsEnabled, settingsTurnFields } from "./turn-settings.ts";
@@ -5644,6 +5645,7 @@ let calendarCalls: CalendarCallManager | null = null;
 const localVmOwnerBusy = (botId: string) => store.bot(botId)?.busy === true;
 const localVmLeases = new LocalVmLeasePool(30 * 60_000);
 const localVmSeatPool = new LocalVmSeatPool(() => localVmMaxInstances(cfg));
+const privateDesktopCapacity = new LocalVmCapacity();
 const localVmLifecycleBusy = new Set<string>();
 const localVmThreadTargets = new Map<string, LocalVmTarget>();
 const localVmActiveThreads = new Map<string, string>();
@@ -8133,7 +8135,7 @@ async function beginTurn(
         };
         let localVm: Awaited<ReturnType<typeof readyLocalVmForTurn>>;
         try {
-          localVm = await readyLocalVmForTurn(bot.id, localVmTarget);
+          localVm = await readyLocalVmForTurn(bot.id, localVmTarget, () => directTurnClaimIsCurrent(bot.id, dispatchClaimId, claimThreadId));
         } catch (error) {
           dropLease();
           throw error;
@@ -11788,10 +11790,6 @@ async function localVmPayload(target: LocalVmTarget, auth: RequestAuth) {
 
 async function readyLocalVmForTurn(botId: string, target: LocalVmTarget, isCurrent = () => true) {
   localVmLifecycleBusy.add(target.key);
-  // Fence before the first await, so two concurrent turns cannot both pass the per-bot limit between count and create.
-  const pooled = target.key.startsWith("pool:");
-  const ownsProvision = !pooled && !localVmProvisionBusy;
-  if (ownsProvision) localVmProvisionBusy = true;
   let status: ContainerComputerStatus;
   try {
     status = await containerComputerStatus(undefined, undefined, target);
@@ -11800,23 +11798,18 @@ async function readyLocalVmForTurn(botId: string, target: LocalVmTarget, isCurre
     if (!isCurrent()) return status;
     const action = localVmWakeAction(status);
     if (status.ready || !action || !status.runtime) return status;
-    if (action === "run" && !pooled && !ownsProvision) return status;
-
-    if (action === "run" && target.key.startsWith("bot:")) {
-      const count = await existingPerBotLocalVmCount(status.runtime);
-      if (!isCurrent() || count >= localVmMaxInstances(cfg)) return status;
-    }
 
     broadcast({ kind: "computer", botId, state: "provisioning" });
     try {
-      status = await containerComputerAction(action, undefined, undefined, target);
+      status = target.key.startsWith("bot:")
+        ? await wakePerBotLocalVm(target, action, isCurrent, true)
+        : await containerComputerAction(action, undefined, undefined, target);
     } catch {
       // `run` can throw after the container exists, so arm the idle backstop anyway.
       localVmIdleFor(target).touch();
       return status;
     }
   } finally {
-    if (ownsProvision) localVmProvisionBusy = false;
     localVmLifecycleBusy.delete(target.key);
   }
   localVmIdleFor(target).touch();
@@ -11829,6 +11822,56 @@ async function readyLocalVmForTurn(botId: string, target: LocalVmTarget, isCurre
     status = await containerComputerStatus(undefined, undefined, target);
   }
   return status;
+}
+
+async function wakePerBotLocalVm(target: LocalVmTarget, action: "run" | "start", isCurrent = () => true, wait = false): Promise<ContainerComputerStatus> {
+  const deadline = Date.now() + LOCAL_VM_DESKTOP_WAIT_MS;
+  while (isCurrent()) {
+    const targets = new Map(store.bots.map(bot => {
+      const desktop = perBotLocalVmTarget(bot.id);
+      return [desktop.key, { bot, desktop }] as const;
+    }));
+    try {
+      return await privateDesktopCapacity.run({
+        key: target.key, limit: localVmMaxInstances(cfg), current: isCurrent,
+        reserve: () => {
+          if (localVmImageBusy || localVmModeChangeBusy || localVmProvisionBusy) throw new Error("Desktop setup is in progress");
+          localVmProvisionBusy = true;
+          return () => { localVmProvisionBusy = false; };
+        },
+        desktops: async () => {
+          if (localVmImageBusy || localVmModeChangeBusy) throw new Error("Desktop setup is in progress");
+          const runtime = await containerRuntimeStatus();
+          if (!runtime.runtime || !runtime.daemonUp) throw new Error("Container runtime is unavailable");
+          const existing = await discoverExistingPerBotLocalVms(store.bots, runtime.runtime);
+          return Promise.all(existing.map(async ({ target: desktop }) => {
+            const status = await containerComputerStatus(undefined, undefined, desktop);
+            return { key: desktop.key, running: status.container === "running", managed: status.managed };
+          }));
+        },
+        busy: key => {
+          const entry = targets.get(key);
+          return !entry || entry.bot.busy || botComputerControlSnapshot(entry.bot.id).held ||
+            localVmLifecycleBusy.has(key) || localVmActiveThreads.has(key) ||
+            Boolean(localVmLeaseFor(entry.desktop).current(localVmOwnerBusy));
+        },
+        park: async key => {
+          const desktop = targets.get(key)!.desktop;
+          localVmLifecycleBusy.add(key);
+          try {
+            const stopped = await containerComputerAction("stop", undefined, undefined, desktop);
+            if (stopped.container === "running") throw new Error("Desktop did not stop");
+            localVmIdleFor(desktop).cancel();
+          } finally { localVmLifecycleBusy.delete(key); }
+        },
+        wake: () => containerComputerAction(action, undefined, undefined, target),
+      });
+    } catch (error) {
+      if (!(error instanceof LocalVmCapacityBusy) || !wait || Date.now() >= deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, 1_000));
+    }
+  }
+  throw new Error("Desktop request cancelled");
 }
 
 async function existingPerBotLocalVmCount(runtime: Runtime) {
@@ -12533,7 +12576,7 @@ ROUTES.push(createComputerRoutes({
   localVmProvisionBusy: { get: () => localVmProvisionBusy, set: (busy) => { localVmProvisionBusy = busy; } },
   localVmModeChangeBusy: { get: () => localVmModeChangeBusy },
   localVmOwnerBusy, localVmIdleMs, localVmLeaseFor, localVmIdleFor, localVmTargetForBot, localVmTargetForStatus,
-  localVmPayload, localVmInventoryPayload, existingPerBotLocalVmCount, teamComputersPayload, teamComputerInUse,
+  localVmPayload, localVmInventoryPayload, existingPerBotLocalVmCount, wakePerBotLocalVm, teamComputersPayload, teamComputerInUse,
   managedBoatOwners, providerTransitionMessage, botHasActiveTurn, botComputerControlKey, botComputerControlSnapshot,
   computerPreviewBot, computerPreviewSurface, claimTeamComputerLifecycle, claimBotComputerLifecycle,
   claimBoatInventoryRequest, claimManagedBoatMutation, claimManagedVpsMutation, cloudComputerUsed: owner => cloudComputerPower.used(owner),

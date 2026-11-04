@@ -265,6 +265,38 @@ describe("Group Local VM ownership on the real isolated server", () => {
     expect((await gate(previous)).status).toBe(401);
   });
 
+  it("parks private desktops at the running limit and resumes their own workspace", async () => {
+    vmState({ containers: [] });
+    await api("PATCH", "/api/config", { localVm: { mode: "per-bot", maxInstances: 2 } });
+    const bots: any[] = [];
+    try {
+      for (const name of ["Private A", "Private B", "Private C"]) {
+        const { bot } = await api("POST", "/api/bots", { name });
+        bots.push(bot);
+      }
+      const a = await api("POST", `/api/bots/${bots[0].id}/local-computer/run`, {});
+      const marker = join(a.workspace_path, "private-marker.txt");
+      writeFileSync(marker, "private A");
+      await api("POST", `/api/bots/${bots[1].id}/local-computer/run`, {});
+      await api("POST", `/api/bots/${bots[2].id}/local-computer/run`, {});
+      const inventory = await api("GET", "/api/local-computer/instances");
+      expect(inventory.instances).toHaveLength(3);
+      expect(inventory.instances.filter((d: any) => d.container === "running")).toHaveLength(2);
+      const stopped = inventory.instances.find((d: any) => d.container === "stopped");
+      expect(stopped).toBeTruthy();
+      await api("POST", `/api/bots/${stopped.botId}/local-computer/start`, {});
+      const after = await api("GET", "/api/local-computer/instances");
+      expect(after.instances.filter((d: any) => d.container === "running")).toHaveLength(2);
+      expect(readFileSync(marker, "utf8")).toBe("private A");
+      const state = JSON.parse(readFileSync(stateFile, "utf8"));
+      expect(state.actions.some((a: any) => a.action === "remove")).toBe(false);
+    } finally {
+      for (const bot of bots) await api("DELETE", `/api/bots/${bot.id}`);
+      await api("PATCH", "/api/config", { localVm: { mode: "shared", maxInstances: 2 } });
+      vmState();
+    }
+  }, 45_000);
+
   it.each([false, true])("provisions concurrent cold pool seats (existing per-bot desktops: %s)", async (existingPerBot) => {
     vmState({ containers: [] });
     rmSync(dumpFile, { force: true }); rmSync(finishFile, { force: true });
@@ -282,7 +314,7 @@ describe("Group Local VM ownership on the real isolated server", () => {
         const capped = await fetch(base + `/api/bots/${bots[2].id}/local-computer/run`, {
           method: "POST", headers: { "content-type": "application/json" }, body: "{}",
         });
-        expect(capped.status).toBe(409);
+        expect(capped.status).toBe(200);
       }
       await api("PATCH", "/api/config", { localVm: { mode: "pool", maxInstances: 2 } });
       vmState({ ...readState(), blockedTarget: "pool:0" });
@@ -365,7 +397,7 @@ describe("Group Local VM ownership on the real isolated server", () => {
         await idle(bot.id);
         return mounted;
       };
-      expect(await turn(returning)).toBeUndefined();
+      expect(await turn(returning)).toBeTruthy();
       const before = JSON.parse(readFileSync(stateFile, "utf8")).actions.length;
       await api("POST", `/api/bots/${holder.id}/local-computer/remove`, {});
       rmSync(stateFile + ".entered", { force: true });
@@ -377,7 +409,6 @@ describe("Group Local VM ownership on the real isolated server", () => {
       expect(readFileSync(saved, "utf8")).toBe("survives idle removal");
       expect(JSON.parse(readFileSync(stateFile, "utf8")).actions.slice(before)).toEqual([
         { action: "remove", target: `bot:${createHash("sha256").update(holder.id).digest("hex")}` },
-        { action: "run", target: created.target_key },
       ]);
     } finally {
       writeFileSync(finishFile, "finish");

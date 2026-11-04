@@ -149,10 +149,11 @@ export function createLocalVmUpdater(deps: LocalVmUpdaterDeps) {
     try {
       status = await deps.status(target);
       if (status.container === "missing" || !status.managed || status.imageMatches) return;
+      const resume = !perBot || status.container === "running";
       await keepSignIns(target, status, () => deps.act("stop", target));
       await keepApps(target, { ...status, container: "stopped" }, () => deps.act("stop", target));
       await deps.act("remove", target);
-      status = await deps.act("run", target);
+      status = resume ? await deps.act("run", target) : await deps.status(target);
     } finally {
       if (perBot) deps.provisionBusy.set(false);
       deps.lifecycleBusy.delete(target.key);

@@ -35,8 +35,8 @@ describe("vpsDesktopOutdated", () => {
 
 describe("createLocalVmUpdater", () => {
   const target: LocalVmTarget = { key: "bot:abc", containerName: "openmausbot-computer-abc", workspaceDir: "/nonexistent", viewerPort: null, label: "abc" };
-  const setup = (opts: { held?: () => boolean } = {}) => {
-    let current = status({ imageMatches: false, image: false });
+  const setup = (opts: { held?: () => boolean; stopped?: boolean } = {}) => {
+    let current = status({ imageMatches: false, image: false, ...(opts.stopped ? { container: "stopped" as const } : {}) });
     const calls: string[] = [];
     let imageBusy = false;
     let provisionBusy = false;
@@ -70,6 +70,15 @@ describe("createLocalVmUpdater", () => {
     await updater.sweep();
     expect(calls).toEqual(["pull", "keep (lifecycle busy: true, provision busy: true)", "remove", "run", "updated"]);
     expect(lifecycle.size).toBe(0);
+    expect(updater.pending(target)).toBe(false);
+  });
+
+  it("keeps parked private desktops out of running capacity after an image update", async () => {
+    const { updater, calls, now } = setup({ stopped: true });
+    updater.observe(target, now());
+    await updater.sweep();
+    expect(calls).not.toContain("run");
+    expect(now().container).toBe("missing");
     expect(updater.pending(target)).toBe(false);
   });
 

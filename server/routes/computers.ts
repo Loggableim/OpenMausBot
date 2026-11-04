@@ -1,10 +1,10 @@
 import { z, type ZodString } from "zod";
+import { LocalVmCapacityBusy } from "../local-vm-capacity.ts";
 import * as boat from "../boat.ts";
 import type { ComputerControl } from "../computer-control.ts";
 import { isValidSshAlias, localVmMaxInstances, localVmMode, type AppConfig } from "../config.ts";
 import {
   containerComputerAction,
-  containerComputerExists,
   containerComputerScreenshot,
   containerComputerStatus,
   SHARED_LOCAL_VM_TARGET,
@@ -61,6 +61,7 @@ export interface ComputerRouteDeps {
   localVmPayload(target: LocalVmTarget, auth: RequestAuth): Promise<unknown>;
   localVmInventoryPayload(): Promise<unknown>;
   existingPerBotLocalVmCount(runtime: Runtime): Promise<number>;
+  wakePerBotLocalVm(target: LocalVmTarget, action: "run" | "start"): Promise<Awaited<ReturnType<typeof containerComputerStatus>>>;
   teamComputersPayload(): Promise<unknown>;
   teamComputerInUse(computer: TeamComputerRecord): boolean;
   managedBoatOwners(): boat.ManagedBoatOwner[];
@@ -85,7 +86,7 @@ export function createComputerRoutes(deps: ComputerRouteDeps): RouteHandler {
     store, cfg, sessions, teamComputers, computerControl, controlLeaseIdSchema, boatLifecycleBusyBots,
     computerProviderConfigTransitions, localVmActiveThreads, localVmLifecycleBusy, localVmSeen, localVmImageBusy,
     localVmProvisionBusy, localVmModeChangeBusy, localVmOwnerBusy, localVmIdleMs, localVmLeaseFor, localVmIdleFor,
-    localVmTargetForBot, localVmTargetForStatus, localVmPayload, localVmInventoryPayload, existingPerBotLocalVmCount,
+    localVmTargetForBot, localVmTargetForStatus, localVmPayload, localVmInventoryPayload, wakePerBotLocalVm,
     teamComputersPayload, teamComputerInUse, managedBoatOwners, providerTransitionMessage, botHasActiveTurn,
     botComputerControlKey, botComputerControlSnapshot, computerPreviewBot, computerPreviewSurface,
     claimTeamComputerLifecycle, claimBotComputerLifecycle, claimBoatInventoryRequest, claimManagedBoatMutation,
@@ -362,7 +363,7 @@ export function createComputerRoutes(deps: ComputerRouteDeps): RouteHandler {
       if (localVmImageBusy.get() || localVmModeChangeBusy.get() || localVmLifecycleBusy.has(target.key)) {
         return json(res, 409, { error: "this bot's Local VM setup action is still running" });
       }
-      if (action === "run" && localVmProvisionBusy.get()) {
+      if ((action === "run" || action === "start") && localVmProvisionBusy.get()) {
         return json(res, 409, { error: "another per-bot Local VM is being created — retry after it finishes" });
       }
       const vmOwner = localVmLeaseFor(target).current(localVmOwnerBusy);
@@ -372,22 +373,11 @@ export function createComputerRoutes(deps: ComputerRouteDeps): RouteHandler {
       }
       // Fenced before the first await, so two requests cannot both pass the limit.
       localVmLifecycleBusy.add(target.key);
-      if (action === "run") localVmProvisionBusy.set(true);
       try {
-        if (action === "run") {
-          const before = await containerComputerStatus(undefined, undefined, target);
-          if (!before.runtime) return json(res, 409, { error: before.problem ?? "No container runtime is installed" });
-          if (!(await containerComputerExists(before.runtime, target))) {
-            const count = await existingPerBotLocalVmCount(before.runtime);
-            if (count >= localVmMaxInstances(cfg)) {
-              return json(res, 409, {
-                error: `The per-bot Local VM limit is ${localVmMaxInstances(cfg)} — delete an unused bot VM or raise the limit in App Settings`,
-              });
-            }
-          }
-        }
         if (action === "remove") await keepSignInsBeforeRemove(target);
-        const status = await containerComputerAction(action, undefined, undefined, target);
+        const status = (action === "run" || action === "start") && target.key.startsWith("bot:")
+          ? await wakePerBotLocalVm(target, action)
+          : await containerComputerAction(action, undefined, undefined, target);
         if (action === "run" || action === "start") {
           localVmSeen.add(target.key);
           localVmIdleFor(target).touch();
@@ -400,8 +390,10 @@ export function createComputerRoutes(deps: ComputerRouteDeps): RouteHandler {
           mode: localVmMode(cfg),
           max_instances: localVmMaxInstances(cfg),
         });
+      } catch (error) {
+        if (error instanceof LocalVmCapacityBusy) return json(res, 409, { error: error.message });
+        throw error;
       } finally {
-        if (action === "run") localVmProvisionBusy.set(false);
         localVmLifecycleBusy.delete(target.key);
       }
     }

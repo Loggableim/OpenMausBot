@@ -64,6 +64,8 @@ export interface ComputerAsk {
 export interface LendingSummary {
   lending: string[];
   clouds: string[];
+  /** Lent Clouds that haven't accepted this computer yet (asleep ones excluded). */
+  waiting?: string[];
   using: string[];
   paused: boolean;
   terminal?: boolean;
@@ -86,6 +88,8 @@ export function createComputerSharing(options: {
   file: string;
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   environments: () => Workspace[];
+  /** This computer's own OpenMausBot installs, by environment id: what an MCP server kept for it on a Cloud names. */
+  localEnvironments?: () => string[];
   enabled?: () => Promise<boolean>;
   protectedPaths?: string[];
   /** The desktop's cua connection, or why it did not start (`reason` stays on this computer). */
@@ -158,6 +162,8 @@ export function createComputerSharing(options: {
   /** Every Cloud stops using this computer, across restarts too, until resume(). */
   pause(): void;
   resume(): Promise<void> | undefined;
+  /** Whether every Cloud of the signed-in account's own may run commands here as this user, across restarts too. */
+  lendTerminal(on: boolean): Promise<void> | undefined;
   screenChanged(): Promise<void>;
   cloudChanged(): void;
   start(options?: { maintainer?: boolean }): void;

@@ -4,6 +4,7 @@ import { asleepAnswer, BACKGROUND_HEADER, cloudAsleep, markCloudAsleep, markClou
 import { lacksAdminScope } from "../lib/admin-scope";
 import { isBotLimitRefusal, showBotLimit } from "../lib/bot-limit";
 import { noteRefusedRequest } from "../lib/session-ended";
+import { serverErrorText } from "../lib/server-error";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -47,7 +48,7 @@ export async function api<T = any>(path: string, init?: ApiInit): Promise<T> {
   if (!res.ok) {
     const error = body?.error;
     const message = typeof error === "string" ? error : typeof error?.message === "string" ? error.message : `${res.status} ${res.statusText}`;
-    const refused = new ApiError(message, res.status, body);
+    const refused = new ApiError(serverErrorText(body, message), res.status, body);
     if (res.status === 401 || (res.status === 403 && !lacksAdminScope(refused))) noteRefusedRequest();
     if (res.status === 409 && isBotLimitRefusal(refused)) showBotLimit();
     throw refused;
@@ -73,4 +74,16 @@ function heldUntilShown<T>(path: string, init: ApiInit): Promise<T> {
 export function snapshotArrays<T>(answer: T, ...keys: (keyof T)[]): T {
   for (const key of keys) if (!Array.isArray(answer[key])) throw new Error(`Invalid snapshot: ${String(key)} is not a list`);
   return answer;
+}
+
+const RETRY_REQUEST_MS = [2_000, 5_000, 15_000, 30_000];
+
+/** Sends `attempt` again after each failure, waiting longer each time, for as long as `wanted()` holds. */
+export function retryRequest(wanted: () => boolean, attempt: () => Promise<unknown>): void {
+  const run = (tries: number) => {
+    attempt().catch(() => {
+      if (wanted()) setTimeout(() => run(tries + 1), RETRY_REQUEST_MS[Math.min(tries, RETRY_REQUEST_MS.length - 1)]);
+    });
+  };
+  run(0);
 }

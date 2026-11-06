@@ -160,7 +160,7 @@ export type CliOwner = "bot" | "openmausbot";
 /** The bot box (server/bot-box): a `bot` spawn runs in it where it is on; `box` asks for one for another owner, with more
  * paths or the host's network, and `false` keeps a spawn out of it. */
 export interface BoxSpawnOptions {
-  box?: boolean | Pick<BoxRequest, "rw" | "ro" | "net" | "botId" | "allowEnv">;
+  box?: boolean | Pick<BoxRequest, "rw" | "ro" | "net" | "botId" | "allowEnv" | "relay">;
   /** On a Team Cloud, runs in its conversation's engine home though it is not a bot's engine (a keep-warm ping). */
   engineHome?: boolean;
   /** A bot's own work that is not its engine (its browser, a helper engine): memory runs out on it first, as on a `bot`
@@ -265,7 +265,8 @@ function cutOffError(cli: string, timeout: number | undefined): Error {
   return Object.assign(new Error(`${cli} timed out after ${timeout} ms`), { killed: true, code: null, signal: null });
 }
 
-/** Concurrent probes on a busy machine can outlast the timeout, so a CLI that answered before keeps its last version. */
+export const CLI_VERSION_TIMEOUT_MS = 30_000;
+
 export function cliVersionReader(cli: string): (err: Error | null, stdout: string) => { version: string } | { reason: string } {
   let last: string | null = null;
   return (err, stdout) => {
@@ -273,8 +274,18 @@ export function cliVersionReader(cli: string): (err: Error | null, stdout: strin
     if (version) return { version: (last = version) };
     const failure = err as (NodeJS.ErrnoException & { killed?: boolean }) | null;
     const timedOut = failure?.killed === true && typeof failure.code !== "string";
-    if (timedOut && last) return { version: last };
-    return { reason: timedOut ? `\`${cli}\` took longer than 8 seconds to answer --version. The machine may be busy; check again.` : `\`${cli}\` CLI not found` };
+    if (failure?.code === "ENOENT") {
+      last = null;
+      return { reason: `\`${cli}\` CLI not found` };
+    }
+    if (failure?.code === "EACCES" || failure?.code === "EPERM") {
+      last = null;
+      return { reason: `\`${cli}\` could not run --version. Check its file permissions.` };
+    }
+    if (last && (timedOut || !err || typeof failure?.code === "number")) return { version: last };
+    return { reason: timedOut
+      ? `\`${cli}\` took longer than ${CLI_VERSION_TIMEOUT_MS / 1000} seconds to answer --version. The machine may be busy; check again.`
+      : !err ? `\`${cli}\` returned no version. Check again.` : `\`${cli}\` could not report its version. Check that it starts in a terminal, then check again.` };
   };
 }
 

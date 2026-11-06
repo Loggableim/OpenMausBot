@@ -66,6 +66,7 @@ it("the clean workspace's line says the bots are safe in their Cloud, on every l
   await vi.waitFor(() => expect(host.querySelector("[data-home-line='clean']")?.textContent).toBe("Your bots are in the Cloud. Sign in to get them."));
   expect(host.querySelector("button")).toBeNull();
   expect(homeLineText({ kind: "clean" })).toBe("Your bots are in the Cloud. Sign in to get them.");
+  expect(homeLineText({ kind: "clean", saved: true })).toBe("Your bots are in your other account's Cloud. Click its icon on the left of the app to get them.");
 });
 
 it("with the new-user setup skipped, the clean workspace still offers connecting an AI while none is ready", async () => {
@@ -82,4 +83,16 @@ it("a team's line never offers it", async () => {
   await mount(vi.fn().mockResolvedValue({ kind: "left", name: "Acme" }));
   await vi.waitFor(() => expect(host.querySelector("[data-home-line='left']")).not.toBeNull());
   expect(host.querySelector("[data-home-line-ai]")).toBeNull();
+});
+
+it("in This Mac's own place, the line says it is separate from My Cloud, where the bots from before are, and where an older copy comes in", async () => {
+  ais.instances = [{ ready: false, instanceId: "claude", driver: "claudeCode" }];
+  await mount(vi.fn().mockResolvedValue({ kind: "profile" }));
+  window.ogb = { ...window.ogb, platform: "darwin" } as unknown as typeof window.ogb;
+  await vi.waitFor(() => expect(host.querySelector("[data-home-line='profile']")).not.toBeNull());
+  expect(homeLineText({ kind: "profile" }, "darwin")).toBe("This Mac starts fresh, separate from My Cloud. The bots you had here are on My Cloud; to bring in an older copy, import its backup in Settings → Backups.");
+  expect(homeLineText({ kind: "profile" }, "win32")).toMatch(/^This PC starts fresh/);
+  expect(host.querySelector("[data-home-line-ai]")?.textContent, "a fresh place offers connecting an AI while none is ready").toBe("Connect an AI");
+  setLocale("pt-br");
+  expect(homeLineText({ kind: "profile" }, "darwin")).toMatch(/^Este Mac começa do zero/);
 });

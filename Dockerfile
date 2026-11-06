@@ -31,6 +31,14 @@ FROM caddy:2.10.2 AS edge
 # capability (and the build user's ownership).
 RUN cp /usr/bin/caddy /caddy
 
+# The Cloudflare tunnel's connector, for a Cloud home on a server with no
+# inbound port: the release pinned in scripts/prepare-cloudflared.mjs, checked
+# against its digest and run once on the image's own CPU before it is copied.
+FROM node:24-bookworm-slim AS tunnel
+COPY scripts/prepare-cloudflared.mjs /stage/prepare-cloudflared.mjs
+RUN node /stage/prepare-cloudflared.mjs --current --root /stage \
+ && cp /stage/dist-native/cloudflared/linux-*/cloudflared /cloudflared
+
 # The JavaScript build is the same for every CPU, so it runs once on the build
 # host's own; only the Data engine's native tree below follows the image's CPU.
 FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS build
@@ -124,15 +132,27 @@ FROM runtime AS cloud-home
 # runs every bot turn in its own namespaces, socat bridges a box's loopback
 # ports to the server's gates. Their own layer, so the Chrome layers beneath
 # stay cached. pnpm, so a bot's shell can install what its project asks for.
+# uv and uvx, so a connector someone runs with uvx comes along when they move here
+# (server/cloud-connections.ts) as an npx one does: about 32 MB, on every user's
+# PATH and out of the volume. What it downloads lives in the volume's cache.
+ARG UV_VERSION=0.13.4
+ARG TARGETARCH
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 poppler-utils unzip bubblewrap socat \
   && rm -rf /var/lib/apt/lists/* \
   && HOME=/tmp/omb-build-home npm install -g pnpm@10.33.0 \
-  && bwrap --version && socat -V | head -1 && HOME=/tmp/omb-build-home pnpm --version \
-  && rm -rf /tmp/omb-build-home /tmp/node-compile-cache
+  && uv_arch=x86_64 && if [ "$TARGETARCH" = arm64 ]; then uv_arch=aarch64; fi \
+  && mkdir -p /tmp/uv-install \
+  && curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${uv_arch}-unknown-linux-gnu.tar.gz" | tar -xz -C /tmp/uv-install --strip-components=1 \
+  && install -m 0755 /tmp/uv-install/uv /tmp/uv-install/uvx /usr/local/bin/ \
+  && bwrap --version && socat -V | head -1 && HOME=/tmp/omb-build-home pnpm --version && uv --version | grep -qF "uv ${UV_VERSION}" \
+  && rm -rf /tmp/omb-build-home /tmp/uv-install /tmp/node-compile-cache
 # Caddy and Grok are pinned, so they sit beneath the engines, which change
 # more often.
 COPY --from=edge /caddy /usr/local/bin/caddy
+COPY --from=tunnel /cloudflared /usr/local/bin/cloudflared
+# cloudflared's own user: its token rides its environment, which maus can't read.
+RUN useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin omb-tunnel
 # Grok Build, the grok.com subscription engine: xAI's own installer, pinned to
 # the version the Grok driver is verified against (server/drivers/acp/grok.ts).
 # People sign it in from the app with a device code; its login lands in
@@ -160,7 +180,7 @@ ARG ENGINES_CACHE_TAG=""
 RUN echo "engines: ${CLOUD_HOME_ENGINES:-none} ${ENGINES_CACHE_TAG}" \
   && if [ -n "$CLOUD_HOME_ENGINES" ]; then HOME=/tmp/omb-build-home npm install -g $CLOUD_HOME_ENGINES; fi \
   && rm -rf /tmp/omb-build-home /tmp/node-compile-cache
-COPY deploy/fly/Caddyfile /app/cloud/Caddyfile
+COPY deploy/fly/Caddyfile deploy/fly/Caddyfile.tls deploy/fly/Caddyfile.tunnel deploy/fly/edge-routes.caddy /app/cloud/
 # The root supervisor runs /app's code and hands the server its secrets, so
 # no file there may be one `maus` can change: unlike the server image's, these
 # copies stay root's. Only the /data volume is maus's; the launcher refuses to
@@ -172,11 +192,14 @@ COPY --from=build /src/dist ./dist
 # The bundled skills (server/skill-library.ts reads ./skills from /app).
 COPY --from=build /src/skills ./skills
 RUN export HOME=/tmp/omb-build-home \
- && chmod go-w /app/cloud /app/cloud/Caddyfile \
+ && chmod go-w /app/cloud /app/cloud/Caddyfile /app/cloud/Caddyfile.tls /app/cloud/Caddyfile.tunnel /app/cloud/edge-routes.caddy \
  && caddy version \
+ && cloudflared version \
  && OMB_CLOUD_PUBLIC_HOST=validate.fly.dev caddy validate --config /app/cloud/Caddyfile --adapter caddyfile \
+ && OMB_CLOUD_PUBLIC_HOST=validate.example.com OMB_CLOUD_EDGE_STORAGE=/tmp/omb-build-home/edge caddy validate --config /app/cloud/Caddyfile.tls --adapter caddyfile \
+ && OMB_CLOUD_PUBLIC_HOST=validate.example.com caddy validate --config /app/cloud/Caddyfile.tunnel --adapter caddyfile \
  && test -f /app/dist-server/cloud-home-start.js \
- && untrusted="$(find /app /usr/local/bin/caddy \( ! -user root -o ! -type l -perm /022 \) -print)" \
+ && untrusted="$(find /app /usr/local/bin/caddy /usr/local/bin/cloudflared \( ! -user root -o ! -type l -perm /022 \) -print)" \
  && if [ -n "$untrusted" ]; then echo "not root's, or writable by others:" >&2; echo "$untrusted" >&2; exit 1; fi \
  && rm -rf /tmp/omb-build-home
 ENV HOME=/data

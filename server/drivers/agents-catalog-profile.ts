@@ -16,7 +16,7 @@ export interface CatalogProfile {
   memoryEnabled?: boolean;
   /** The section's Chief of Staff; the server refuses Chief-only tools to every other bot. */
   chief: boolean;
-  /** Written into start_thread's schema: the only bot_id it accepts. */
+  /** Only for Watcher's own tool. Never written into a schema: a list that names its bot can't share a prompt cache with other bots. */
   botId: string;
   /** features.chiefEscalations: raise_escalation is mounted. */
   escalations?: boolean;
@@ -27,9 +27,9 @@ export interface CatalogProfile {
   /** A direct chat whose bot may pick where it works (Works on is not Off and no team computer is its own): select_computer
    * is mounted, and the harness refuses a pick on any turn but a person's own message. */
   computerSelection?: boolean;
-  /** A room's thread: the widget and page tools, which rooms refuse, and the wait tools, since a room holds no wait,
-   * are not mounted. */
+  /** A room's thread: the wait tools are not mounted, since a room holds no wait. */
   room?: boolean;
+  imageGeneration?: boolean;
 }
 
 /** Everything is off unless the harness says "1". */
@@ -49,5 +49,6 @@ export function catalogProfileFromEnv(env: NodeJS.ProcessEnv): CatalogProfile {
     mausbot: env.OMB_MAUSBOT === "1",
     computerSelection: env.OMB_COMPUTER_SELECTION === "1",
     room: env.OMB_ROOM === "1",
+    imageGeneration: env.OMB_IMAGE_GENERATION === "1",
   };
 }

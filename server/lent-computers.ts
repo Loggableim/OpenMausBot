@@ -12,6 +12,7 @@ export type LentPlatform = typeof LENT_PLATFORMS[number];
 const recordSchema = z.object({
   id: z.string().uuid(), person: z.string().min(1).max(200), name: z.string().min(1).max(120), platform: z.enum(LENT_PLATFORMS).nullable(),
   folders: z.number().int().min(0).max(20), terminal: z.boolean(), screen: z.boolean(), internet: z.boolean().optional(), chrome: z.boolean().optional(),
+  environments: z.array(z.string().uuid()).max(8).optional(),
   lastSeenAt: z.number(), lastUsedAt: z.number().nullable(), stoppedAt: z.number().nullable(),
 }).strict();
 const fileSchema = z.object({ version: z.literal(1), computers: z.array(recordSchema).max(200) });
@@ -24,6 +25,16 @@ const PER_PERSON = 10;
 /** "PC" on Windows, "Mac" on macOS, else "computer": the word a bot uses for the person's device. */
 export function deviceWord(platform: LentPlatform | null | undefined): "PC" | "Mac" | "computer" {
   return platform === "win32" ? "PC" : platform === "darwin" ? "Mac" : "computer";
+}
+
+/** Their computer as they know it: "their PC (MILIND-PC)" on Windows, "their Mac (…)" only on a Mac, else "their own computer". */
+export function theirComputer(lent: ReadonlyArray<{ name: string; platform: LentPlatform | null }>): { theirs: string; device: "PC" | "Mac" | "computer" } {
+  const latest = lent[0];
+  if (!latest) return { theirs: "their own computer", device: "computer" };
+  const device = deviceWord(latest.platform);
+  // eslint-disable-next-line no-control-regex
+  const name = latest.name.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, " ").slice(0, 80);
+  return { theirs: `their ${device} (${name})`, device };
 }
 
 export class LentComputers {
@@ -56,12 +67,14 @@ export class LentComputers {
 
   /** A computer that registered, now lending these scopes. Each new grant has a new id, so a computer is known by its
    * name: lending again from the same computer updates its one record. A person's newest computers are kept. */
-  connected(person: string, input: { id: string; name: string; platform?: LentPlatform; folders: number; terminal: boolean; screen: boolean; internet?: boolean; chrome?: boolean }): void {
+  connected(person: string, input: { id: string; name: string; platform?: LentPlatform; folders: number; terminal: boolean; screen: boolean; internet?: boolean; chrome?: boolean; environments?: string[] }): void {
     const at = this.now();
     const same = (computer: LentComputer) => computer.person === person && (computer.id === input.id || computer.name === input.name);
     const previous = this.computers.find(same);
     const next: LentComputer = { id: input.id, person, name: input.name, platform: input.platform ?? previous?.platform ?? null, folders: input.folders,
-      terminal: input.terminal, screen: input.screen, internet: input.internet === true, chrome: input.chrome === true, lastSeenAt: at, lastUsedAt: previous?.lastUsedAt ?? null, stoppedAt: null };
+      terminal: input.terminal, screen: input.screen, internet: input.internet === true, chrome: input.chrome === true,
+      ...(input.environments?.length ? { environments: input.environments } : previous?.environments ? { environments: previous.environments } : {}),
+      lastSeenAt: at, lastUsedAt: previous?.lastUsedAt ?? null, stoppedAt: null };
     const others = this.computers.filter((computer) => !same(computer));
     const mine = [next, ...others.filter((computer) => computer.person === person)].slice(0, PER_PERSON);
     this.computers = [...mine, ...others.filter((computer) => computer.person !== person)];

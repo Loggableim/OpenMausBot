@@ -64,6 +64,8 @@ export interface ComputerAsk {
 export interface LendingSummary {
   lending: string[];
   clouds: string[];
+  /** Lent Clouds that haven't accepted this computer yet (asleep ones excluded). */
+  waiting?: string[];
   using: string[];
   paused: boolean;
   terminal?: boolean;
@@ -86,6 +88,8 @@ export function createComputerSharing(options: {
   file: string;
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   environments: () => Workspace[];
+  /** This computer's own OpenMausBot installs, by environment id: what an MCP server kept for it on a Cloud names. */
+  localEnvironments?: () => string[];
   enabled?: () => Promise<boolean>;
   protectedPaths?: string[];
   /** The desktop's cua connection, or why it did not start (`reason` stays on this computer). */
@@ -144,6 +148,8 @@ export function createComputerSharing(options: {
   cloudState(env: Workspace | null | undefined): CloudLendingState;
   /** The folders lent to My Cloud, for Files' copies of them (electron/lent-folders.mjs). */
   lentToCloud(env: Workspace | null | undefined): { lendingId: string; folders: Array<{ id: string; path: string; name: string; write: boolean }>; protectedPaths: string[]; paused?: true } | { off: true };
+  /** Another account takes over: lending to this account's Clouds stops, and goes on if it comes back. */
+  leaveAccount(accountId: string | null): void;
   /** Lending's last requests have been answered or have timed out; a Cloud's answer can re-issue its session cookie. */
   goodbyesDone(): Promise<unknown>;
   lendingToCloud(): boolean;
@@ -156,6 +162,8 @@ export function createComputerSharing(options: {
   /** Every Cloud stops using this computer, across restarts too, until resume(). */
   pause(): void;
   resume(): Promise<void> | undefined;
+  /** Whether every Cloud of the signed-in account's own may run commands here as this user, across restarts too. */
+  lendTerminal(on: boolean): Promise<void> | undefined;
   screenChanged(): Promise<void>;
   cloudChanged(): void;
   start(options?: { maintainer?: boolean }): void;

@@ -16,7 +16,7 @@ import { serverLine, type ServerLineKey } from "../server-lines.ts";
 import { PASS, type RouteHandler } from "./table.ts";
 
 const PATH = "/api/internal/mcp-servers";
-const ACTIONS = ["list", "add", "update", "enable", "disable", "test", "sign_in", "sign_out", "remove"] as const;
+const ACTIONS = ["list", "add", "update", "enable", "disable", "restart", "test", "sign_in", "sign_out", "remove"] as const;
 type McpAction = (typeof ACTIONS)[number];
 const MAX_TOOL_NAMES = 100;
 
@@ -28,6 +28,7 @@ const ASK_ADMIN = "Ask a workspace admin to add it.";
 const WHEN = {
   live: { arrive: "The new tools arrive on your next turn.", leave: "Its tools leave on your next turn." },
   approved: { arrive: "Its tools are yours from this turn.", leave: "Its tools are gone from this turn." },
+  restart: "This turn keeps talking to the old process; your next turn starts the new code.",
 };
 const ASKED: Record<McpCardAction, ServerLineKey> = { enable: "server.mcp.askedTurnOn", update: "server.mcp.askedChange", remove: "server.mcp.askedRemove" };
 
@@ -74,6 +75,11 @@ export interface InternalMcpDeps {
   /** Shows the person a Sign in card for a server reached by URL; the bot ends its turn and OpenMausBot resumes it when
    * they finish or set the card aside. */
   requestSignIn(name: string, server: StoredRemoteMcpServer): { posted: true } | { status: number; error: string };
+  /** Whose lent computers this turn may use; null: nobody's. */
+  lender?(): string | null;
+  /** A server this bot adds that needs the person's own computer, marked as running on the one of theirs lent now
+   * (`computer`: the one the bot names, by its name), or why it can't be added yet. */
+  place?(server: StoredMcpServer, computer: string | undefined): Promise<{ ok: true; server: StoredMcpServer } | { ok: false; error: string }>;
 }
 
 type Deps = Omit<InternalMcpDeps, "readBody">;
@@ -138,12 +144,12 @@ export function showMcpActivity(
 
 async function act(deps: Ctx, body: unknown, signal: AbortSignal): Promise<Outcome> {
   if (!body || typeof body !== "object" || Array.isArray(body)) return { status: 400, error: "request body must be a JSON object" };
-  const { action, name, ...rest } = body as Record<string, unknown>;
+  const { action, name, computer, ...rest } = body as Record<string, unknown>;
   if (!ACTIONS.includes(action as McpAction)) return { status: 400, error: `mcp_server needs action: one of ${ACTIONS.join(", ")}.` };
   if (action === "list") return list(deps);
   if (typeof name !== "string" || !name) return { status: 400, error: `mcp_server ${String(action)} needs name.` };
   const fields = Object.fromEntries(Object.entries(rest).filter(([key]) => !BOT_STRIPPED_KEYS.includes(key)));
-  if (action === "add") return add(deps, name, fields, signal);
+  if (action === "add") return add(deps, name, fields, signal, typeof computer === "string" ? computer : undefined);
 
   const servers = deps.cfg().mcpServers ?? {};
   if (!Object.hasOwn(servers, name)) {
@@ -156,14 +162,16 @@ async function act(deps: Ctx, body: unknown, signal: AbortSignal): Promise<Outco
   const may = botMayChange(owner, server);
   if (action === "sign_in") return signIn(deps, name, server, owner);
   if (action === "test") {
-    if (server.runsOn) return { status: 409, error: runsElsewhere(server.runsOn) };
     if (owner === "theirs" && !may.ok) return { status: 403, error: may.error };
     return test(deps, name, server, signal);
   }
 
-  if (!may.ok) return { status: 403, error: may.error };
+  // The person's own answer to the card for a server this bot added turns it on, wherever it runs.
+  const theirAnswer = deps.approved === true && action === "enable" && owner === "elsewhere";
+  if (!may.ok && !theirAnswer) return { status: 403, error: may.error };
   if (owner === "shared" && !deps.teamAdmin()) return { status: 403, error: ASK_ADMIN };
   if (action === "disable") return disable(deps, name);
+  if (action === "restart") return restart(deps, name, server, signal);
   if (action === "sign_out") return signOut(deps, name, server);
   // A deliberate exception to server/direct-apply.ts, which applies a bot's change at every level with Undo: turning an
   // MCP server on runs a command on the person's computer or sends their data to a new service, the kind of action the
@@ -185,7 +193,7 @@ function list(deps: Deps): Outcome {
     return [botListing(name, server, {
       owner,
       authState: isRemoteMcpServer(server) ? deps.authState(name, server.url) : "none",
-      forThisBot: !server.runsOn && (!deps.sender.mcpServers || deps.sender.mcpServers.includes(name)) && deps.canUse(name),
+      forThisBot: (!deps.sender.mcpServers || deps.sender.mcpServers.includes(name)) && deps.canUse(name),
       managedBy: deps.managedBy(name, server),
     })];
   });
@@ -193,7 +201,7 @@ function list(deps: Deps): Outcome {
   return { status: 200, text: `MCP servers you can see (${rows.length}):\n${JSON.stringify(rows)}` };
 }
 
-async function add(deps: Deps, name: string, fields: Record<string, unknown>, signal: AbortSignal): Promise<Outcome> {
+async function add(deps: Deps, name: string, fields: Record<string, unknown>, signal: AbortSignal, computer?: string): Promise<Outcome> {
   const managed = deps.addRefusal?.();
   if (managed) return { status: 403, error: managed };
   if (!deps.teamAdmin()) return { status: 403, error: ASK_ADMIN };
@@ -202,10 +210,12 @@ async function add(deps: Deps, name: string, fields: Record<string, unknown>, si
   if (!redeemed.ok) return { status: 400, error: redeemed.error };
   const added = deps.botAdd(deps.cfg().mcpServers ?? {}, redeemed.value);
   if (!added.ok) return { status: added.status, error: added.error };
-  const saved = deps.config.add(name, added.server);
+  const placed = deps.place ? await deps.place(added.server, computer) : { ok: true as const, server: added.server };
+  if (!placed.ok) return { status: 409, error: placed.error };
+  const server = placed.server;
+  const saved = deps.config.add(name, server);
   if ("error" in saved) return refused(saved);
   redeemed.commit();
-  const server = added.server;
   const where = folderText(deps, server, added.moved ?? []);
 
   if (!deps.fullAccess()) {
@@ -288,6 +298,18 @@ function disable(deps: Deps, name: string): Outcome {
   deps.decide(`Turned off MCP server ${name}`, deps.fullAccess() ? "full-access" : "level");
   say(deps, { action: "disable", name }, ["server.mcp.turnedOff", { name }]);
   return { status: 200, text: `Turned off MCP server ${name}. ${WHEN.live.leave}` };
+}
+
+/** Runs what is already on, as the next turn would anyway, so it takes no card at any level. */
+async function restart(deps: Deps, name: string, server: StoredMcpServer, signal: AbortSignal): Promise<Outcome> {
+  if (isRemoteMcpServer(server)) return { status: 400, error: `${name} is reached by its address, so it has no process to restart. Call mcp_server with action test to check it.` };
+  if (!server.enabled) return { status: 403, error: `${name} is off. Call mcp_server with action enable ${deps.fullAccess() ? "first" : "to ask the person to turn it on"}.` };
+  const restarted = deps.config.restart(name);
+  if ("error" in restarted) return refused(restarted);
+  const outcome = await probe(deps, name, server, signal);
+  deps.decide(`Restarted MCP server ${name}`, deps.fullAccess() ? "full-access" : "level");
+  say(deps, { action: "restart", name }, ["server.mcp.restarted", { name }], outcome.line);
+  return { status: 200, text: `Restarted MCP server ${name}. Its saved keys stay. ${outcome.text} ${WHEN.restart}` };
 }
 
 /** A sign-in is the person's own act, so it takes a card at every level; a personal server's card signs in the turn's
@@ -380,7 +402,9 @@ function ask(deps: Deps, proposal: Parameters<Deps["requestApproval"]>[0]): Outc
 }
 
 function turnOnText(deps: Deps, server: StoredMcpServer): string {
-  return `${botServerTarget(server)}\n${serverLine(deps.language(), isRemoteMcpServer(server) ? "server.mcp.card.internet" : "server.mcp.card.local")}`;
+  const where = server.runsOn ? serverLine(deps.language(), "server.mcp.card.elsewhere", { computer: server.runsOn.label })
+    : serverLine(deps.language(), isRemoteMcpServer(server) ? "server.mcp.card.internet" : "server.mcp.card.local");
+  return `${botServerTarget(server)}\n${where}`;
 }
 
 const when = (deps: Ctx) => (deps.approved ? WHEN.approved : WHEN.live);
@@ -399,6 +423,7 @@ async function probe(deps: Deps, name: string, server: StoredMcpServer, signal: 
     signal,
     asBot: { id: deps.sender.id, cwd: deps.ownCwd() },
     person: (url) => deps.testAs(name, url),
+    lender: deps.lender?.() ?? null,
   });
   if ("error" in result) return { text: `Not tested: ${result.error}`, line: ["server.mcp.testFailed"] };
   const probed = result.body as McpProbeResult;
@@ -407,7 +432,7 @@ async function probe(deps: Deps, name: string, server: StoredMcpServer, signal: 
     const total = probed.total ?? probed.tools.length;
     const more = total > names.length ? ` and ${total - names.length} more` : "";
     return {
-      text: names.length ? `Test: it works. Its tools: ${names.join(", ")}${more}.` : "Test: it works, but it has no tools.",
+      text: names.length ? `Test: it started and listed its tools: ${names.join(", ")}${more}. That does not show what they return: call one to check.` : "Test: it started, but it has no tools.",
       line: [total === 1 ? "server.mcp.testTools.one" : "server.mcp.testTools.many", { count: String(total) }],
     };
   }
@@ -443,8 +468,9 @@ function selection(deps: Deps, name: string): string {
 }
 
 function folderText(deps: Deps, server: StoredMcpServer, moved: ReadonlyArray<{ to: string }>): string {
-  if (isRemoteMcpServer(server)) return "";
-  return (server.bot ? " It uses files in your own folder, so it works only for you, not for other bots." : "")
+  const elsewhere = server.runsOn ? ` It runs on ${server.runsOn.label}, the person's own computer, and its tools reach you through it while it is online.` : "";
+  if (isRemoteMcpServer(server)) return elsewhere;
+  return elsewhere + (server.bot ? " It uses files in your own folder, so it works only for you, not for other bots." : "")
     + (moved.length ? ` Its files were in this conversation's temporary folder, so they were copied to ${moved.map(({ to }) => relative(deps.ownCwd(), to)).join(", ")} in your own folder, and it runs from there: change them there.` : "");
 }
 

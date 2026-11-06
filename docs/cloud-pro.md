@@ -252,9 +252,10 @@ no line, card answer, conversation or routine recorded under anyone else's
 key; and a record that can be read), every routine and conversation runs at
 its bot's own level, whatever writer it has on record. Only what came in from
 outside stays confined: a routine a bot made or changed in a conversation a
-webhook drove (its run, a payload posted into it, or work it handed on) is
-recorded as the outside's, and runs without full access until the owner opens
-it and saves it once. Routines from before this that a webhook-driven
+webhook drove (its run, a payload posted into it, or work it handed on, for good
+once that run has ended) is recorded as the outside's, and runs without full
+access until the owner opens it and saves it once; what its runs hand a teammate
+stays confined too, in that thread, after the work ends. Routines from before this that a webhook-driven
 conversation made or changed are recorded the same way, once. The first trace
 of a second person makes the Cloud shared for good: cloud-owner.json records
 when, nothing clears it, and a restore never brings or removes it. If that
@@ -452,8 +453,9 @@ the Cloud's address.
   browser's call shows in other windows' call bars as "Ada is on a Live call
   from a web browser". The phone apps show a client they don't know as
   "another device".
-- **Take turns stays on the Mac.** Take-turns calls listen with the Mac app's
-  on-device speech recognition, which a Cloud's page can't use. On a Cloud,
+- **Take turns stays on This computer.** Take-turns calls listen in the
+  desktop app (on-device on a Mac, through Fish Audio on Windows and Linux),
+  which a Cloud's page can't use. On a Cloud,
   the call with one bot is a Live call, and a room has no call
   (`effectiveCallMode` in `src/lib/call-mode.ts`, `GroupCallButton`).
 
@@ -885,13 +887,16 @@ On the Cloud home (`server/shared-computers.ts`, `server/index.ts`):
   write, or one message a webhook posted (a webhook that posts to chat
   writes into the bot's Updates conversation), takes that conversation out
   of lending for good, because a resumed session carries everything said in
-  it. A conversation a guest opened (and
+  it. A conversation a bot opened (a hand-off's work thread, one a bot
+  started itself, a Chief's notices) starts with that bot's words, which are
+  no line in it, so it is never the owner's either: not for the Mac, and not
+  for memory capture, the daily log, recall or the brief. A conversation a guest opened (and
   named) is never the owner's, whoever writes in it. Whenever a computer is lent but a turn can't use it,
   `list_shared_computers` answers why in `unavailable` and `say` (`cloudLendingRefusalText` in
   `server/cloud-lending.ts`), and a refused `shared_computer` call answers the same, so the bot says the reason instead
   of asking the person to open OpenMausBot: lines from before My Cloud carried the owner's name, someone else's words ("Someone else
   wrote in this conversation, so it can't use your Mac. Start a new conversation to use it."; in a room, "Start a new
-  thread in this group chat to use it."), a changed memory, a room turn no line of the owner's started, or any other
+  thread in this group chat to use it."), a webhook's or another's routine's post where no other person wrote, a changed memory, a room turn no line of the owner's started, or any other
   turn that isn't provably the owner's. A move marks the lines and answers the owner wrote in a room as theirs, as in
   a bot conversation (`stampOwner`, `stampHeld`); a room moved before that keeps naming nobody, so a new thread in it
   is the way to use the Mac there. The owner's own edits count as theirs,
@@ -924,7 +929,11 @@ On the Cloud home (`server/shared-computers.ts`, `server/index.ts`):
   (docs/runtime-contract.md §4, §9). Work or a question for a teammate runs
   in the work thread the guest's conversation has with that teammate, opened
   as the guest's, never in the owner's conversation with it, and is never
-  folded into a turn running there. It works in a folder of its own, never the bot's
+  folded into a turn running there. Such a turn reaches no conversation or room
+  of the owner's at all (`retry_thread`, `post_to_room`, `coordinate_bots` with a
+  thread or a room, an answer to a question there), and what it writes to a
+  room's bulletin waits on the owner's card; of the server's own routes it reaches only those
+  `server/host/outside-fence.ts` lists. It works in a folder of its own, never the bot's
   project folder the owner's conversations share, and a card it raises
   never offers "always allow". One that already ran in another folder keeps
   it, except a conversation a revoked session opened: it is unpinned at boot,
@@ -967,7 +976,15 @@ On the Cloud home (`server/shared-computers.ts`, `server/index.ts`):
     or a daily log, or to an instruction file its engine reads in the folder
     of a conversation the owner opened, the bot's own folder, or a folder
     above one (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`,
-    `.claude/settings.json`, skills, agents and commands). A guest's own
+    `.claude/settings.json`, skills, agents and commands). The folder of a
+    new conversation and the skill links the harness makes in it are not a
+    change: a link counts for nothing only when it is named for a skill and
+    points exactly where the harness would point it, a skill the bot has
+    switched on or one from the person's computer, and each switched-on skill's
+    `SKILL.md` counts once, whatever links to it. Anything else there is
+    judged as above, a real folder under a skill's name included. A skill
+    going away from a bot's own folder or a conversation's flags nothing: it
+    plants nothing, and the harness takes back links this way. A guest's own
     folder is not watched: nothing there reaches the owner's turns. A skills,
     agents or commands folder of more than 200 entries is judged as a whole
     (any entry added or removed there, or an edit to an entry or its
@@ -978,9 +995,32 @@ On the Cloud home (`server/shared-computers.ts`, `server/index.ts`):
     count as theirs from then on. A link is judged by where it points, and
     on a Cloud home memory is never read through one. A flagged bot's turns
     cannot use the Mac, and the bot says "This bot's memory was changed in a
-    conversation you didn't write. Review it in Memory to use your Mac
-    again." The bot's **Memory** panel shows the same notice, lists the files
-    that changed, and **Mark reviewed** (one click, only from one of the
+    conversation you didn't write, so it can't use your Mac. In this bot's
+    settings, open Memory, check what changed and tap Mark reviewed, then ask
+    again here." A refusal checks every gate first and names only ways out
+    that work: where the conversation is refused too, it says to review and
+    then start a new conversation, never the new conversation alone. What a
+    refused call answers also tells the bot only the person can change this,
+    so it stops instead of trying again, opening a conversation itself or
+    handing the work on. When the turn answers the owner's own line, the refusal
+    raises a card in the chat instead (`server/host/lending-lifts.ts`): it
+    shows what changed, and **Allow** does what **Mark reviewed** does, for
+    exactly what it showed; if anything changed since, the card shows that and
+    waits. It is one card per line of theirs, written by the harness, answered
+    only on screen from one of the owner's own devices (not by a Live call, a
+    reaction or a process on the Cloud), and counted only while it records
+    the owner as its answerer; the request goes on by itself once they allow
+    it (in a group chat they ask again). **Not now** is
+    not asked again for that line. A webhook's or a routine's run, or a line a
+    bot handed in, never raises one. The same card lets the owner's own line
+    through the work a bot opened a conversation with, for that line alone:
+    work a bot hands into it after they allowed it (made or run then) shuts it
+    again. The same card lets a line of the owner's
+    through what a webhook or a routine they didn't write posted in that
+    conversation, for that line alone: another post, another person's words or
+    their next line shuts it again, what that turn says still feeds no memory, and if it changes the
+    bot's memory the bot is flagged as above. The bot's **Memory** panel shows the same notice,
+    lists the files that changed, and **Mark reviewed** (one click, only from one of the
     owner's own devices, never a local process) accepts exactly what was
     shown: if anything changed since, the panel shows it again. The owner's
     own turns, their edits in the Memory panel (save, delete, undo), upkeep
@@ -1022,8 +1062,13 @@ the `list_shared_computers` and `shared_computer` tools.
 The `Dockerfile`'s `cloud-home` target shares the server image's runtime
 layers (Node, Chrome's libraries, agent-browser and its Chrome) and adds:
 
-- Caddy (`deploy/fly/Caddyfile`), as the only listener the network can reach
-  (`0.0.0.0:8080`);
+- Caddy, as the only listener the network can reach: `0.0.0.0:8080` with
+  `deploy/fly/Caddyfile`, and also 443 for the home's own domain with
+  `deploy/fly/Caddyfile.tls`, or a loopback listener for the home's own
+  tunnel with `deploy/fly/Caddyfile.tunnel` (all import the same routes,
+  `deploy/fly/edge-routes.caddy`);
+- `cloudflared`, pinned and digest-checked by `scripts/prepare-cloudflared.mjs`,
+  run only for a home reached through its own tunnel, as the `omb-tunnel` user;
 - Grok Build (`/usr/local/bin/grok`) from xAI's own installer, pinned by
   `GROK_VERSION` to the version the Grok driver is verified against. The
   build fails if the installer cannot be reached, rather than shipping an
@@ -1107,7 +1152,30 @@ provider outage. So on a Cloud home (`server/engine-memory.ts`):
   bot unless one is saved, and this gate holds the rest. A Starter Cloud runs one
   thread per bot for what a person or a routine starts; the Admin says so with its
   signed `POST /api/cloud/plan` `{"v":1,"tier":"starter"}` (`server/host/cloud-plan-tier.ts`), and a
-  home it never told has no such limit. What a bot's own turn starts always goes through.
+  home it never told has no such limit. What a bot's own turn starts always goes through,
+  and a teammate's hand-off never takes that one thread from the person.
+- **How many bots a Starter Cloud makes.** Five beside its MausBot, one number in
+  `server/host/starter-bot-limit.ts`, from the same signed plan. An archived bot or one
+  that moved away takes no room. Making one past it answers `409` with
+  `{"code":"bot_limit","error":"…"}` from `POST /api/bots`, `POST /api/teams/import`,
+  `POST /api/org-library/add` and a Chief's `create_bot` and `propose_team_setup`; a group that
+  doesn't fit is refused whole, before anything is written. The app opens its upgrade popup
+  when a create button is pressed with no room, and on that refusal. A bot is never taken away:
+  a Cloud over the limit (a downgrade, a move) keeps every one and only making a new one stops.
+  A bot arriving with its own id (a move) and a backup restored are never refused. The limit
+  lifts as soon as the Admin tells the home its new plan, with no restart.
+- **Who goes first.** The gate only changes the order, never how much it lets in. A
+  person's own work goes first: their line, or a turn going on from what they answered.
+  Bot work that has waited 5 minutes takes its place by arrival, so it is never starved
+  (`server/host/turn-order.ts`). A stop never waits: a line made only of stop words stops
+  running work at once in any of the app's languages, and an `@everyone` stop starts no engine on a bot with nothing running.
+- **Saying why.** A turn waiting for memory writes one row naming what runs and
+  what is ahead of it; on Starter it adds that a bigger plan runs more. Its record
+  (`assignment_events`) gets a `held` row with the same facts, as does a hand-off
+  the coordinator holds, each time the reason changes. A hand-off held 30 seconds
+  writes one row in the chat that sent it, naming the limit (`server/host/wait-words.ts`).
+  While something waits for memory `GET /api/config` says `waitingForRoom`, and the
+  room card may show though a turn runs; at any other time it waits for the turn to end.
 - **OpenCode threads share a process.** Threads whose OpenCode would start
   the same way (same login, approval level and settings) run as sessions of one
   `opencode acp` process, up to six at a time and twelve over its life
@@ -1175,12 +1243,87 @@ a public interface. Caddy
 https` and `X-Forwarded-For`, so the server sees each one as remote: it needs
 a paired session, whatever `Host` it claims. On Fly (`FLY_APP_NAME` is set),
 Caddy trusts `Fly-Client-IP` only from Fly's private ranges. On your own
-server, where any local process can reach the published port, it trusts
-`Cf-Connecting-IP` only from the home's own loopback, where the Cloudflare
-tunnel connects from, and ignores a client-address header from any other peer
-(the launcher sets both: `edgeClientAddress`). That address feeds the pairing
-lockout, never authorization. Apart from `/api/health`, Caddy answers only for
-the machine's own name (`OMB_PUBLIC_URL`) and refuses any other `Host`.
+server, where any local process can reach the published port and a bot can
+reach the edge's loopback, it trusts no client-address header by default: the
+client is the connection's peer. Only proxies the owner names may name one
+(below). The launcher sets these values (`edgeClientAddress`). That address
+feeds the pairing lockout, never authorization. Apart from `/api/health`,
+Caddy answers only for the machine's own name (`OMB_PUBLIC_URL`) and refuses
+any other `Host`.
+
+### On your own server: how people reach it
+
+A home on a server of its owner's (Team on your own server) runs the same
+image. Its agent on the server sets these, with the boot contract below, on the
+home's container. None of them may be set on Fly: the launcher refuses to
+start.
+
+| Variable | Value |
+| --- | --- |
+| `OMB_PUBLIC_URL` | `https://` and the name people use, e.g. `https://mausbot.acme.eu`. Its DNS points at the server. |
+| `OMB_CLOUD_EDGE_TLS` | `1`: the edge gets and renews a Let's Encrypt certificate for that name and serves it on 443. Unset or `0`: the edge serves only `:8080`, for the agent, and something else ends TLS. |
+| `OMB_CLOUD_TRUSTED_PROXIES` | Only when the owner's own proxy stands in front: its addresses or ranges (`10.0.0.5`, `10.0.0.0/24`, `private_ranges`), separated by spaces or commas, at most 32. Unset: none. A `/0` range, a host name or anything else stops the home with a message naming the variable. |
+| `OMB_CLOUD_CLIENT_IP_HEADER` | The header those proxies put the client's address in. Default `X-Forwarded-For`; it needs `OMB_CLOUD_TRUSTED_PROXIES`. |
+| `OMB_CLOUD_TUNNEL_TOKEN` | For a server with no inbound port: the connector token of the home's own Cloudflare tunnel. `OMB_PUBLIC_URL` is then the tunnel's address. Not with `OMB_CLOUD_EDGE_TLS`. |
+
+**Its own domain (`OMB_CLOUD_EDGE_TLS=1`).** The agent publishes the
+container's 443 (and 80 if the owner opens it). Let's Encrypt checks the name
+over TLS on 443 (TLS-ALPN), so port 80 is optional; a certificate took 6 to 8 s
+in tests. Clients reach 443 directly, so the edge counts each by its own
+address with no header at all, and the agent's requests, which arrive through
+`127.0.0.1:8080` from the Docker bridge, are counted apart from any stranger
+on 443. The certificate and the ACME account live on the volume, in
+`/data/.omb-edge/caddy`, outside the server's data folder (no workspace backup
+or export carries the key) and never in `/tmp`: an update or a rollback is a
+new container, and Let's Encrypt issues the same name at most 5 times a week.
+The edge speaks HTTP/1.1 and HTTP/2 only, so UDP 443 stays closed.
+
+Docker gives a container on its default bridge no IPv6 address, and then
+forwards IPv6 clients of a port published on `[::]` through its own proxy,
+from the bridge's gateway, `172.17.0.1`: the address the agent's requests come
+from. Measured on Docker 29: ten wrong codes from one IPv6 client made the
+Admin's next signed pairing answer 429. So the agent publishes 443 on IPv4
+only (`0.0.0.0`) and the name has no AAAA record, unless the home's Docker
+network has IPv6 of its own (not verified).
+
+**The owner's own proxy in front.** It ends TLS and forwards to the home's
+`:8080` (published where the proxy can reach it). Name it in
+`OMB_CLOUD_TRUSTED_PROXIES` and, if it does not use `X-Forwarded-For`, its
+header in `OMB_CLOUD_CLIENT_IP_HEADER`, or every member shares one lockout:
+ten wrong codes from anyone would also refuse the Admin's own pairings for a
+minute. A proxy on the same host reaches a published port from the Docker
+bridge's gateway (usually `172.17.0.1`), which the agent shares; naming the
+gateway lets anything that arrives from it name a client, so do it only when
+no port is published on `[::]` (Docker's proxy sends IPv6 clients from there
+too). Only the named peers are believed, and only the last address they add,
+so a client's own `X-Forwarded-For` or `Cf-Connecting-IP` changes nothing.
+
+**No inbound port: a Cloudflare tunnel.** The same managed tunnel as
+`openmausbot serve --tunnel`, one per server: the control plane's
+`ensureEndpoint`, called with the server's installation credential
+(`fleetAccess` in `server/tunnel.ts`), returns the address
+(`https://c-<32 hex>.<zone>`) and the connector token, which go into
+`OMB_PUBLIC_URL` and `OMB_CLOUD_TUNNEL_TOKEN`. The home then runs the pinned
+`cloudflared` from its image (`/usr/local/bin/cloudflared`, the release
+`scripts/prepare-cloudflared.mjs` checks) as its own user, `omb-tunnel`: the
+token rides that process's environment, which `maus`, and so no bot or engine,
+can read. If it stops, the launcher starts it again after 5 s, doubling to
+5 minutes. The control plane points every tunnel at `127.0.0.1:8812`, where
+the edge (`deploy/fly/Caddyfile.tunnel`) listens on loopback only and believes
+`Cf-Connecting-IP`, which Cloudflare's edge sets, so each member is counted
+on their own; `:8080` still believes no header. The home lives in one
+container, so a restart brings its tunnel back with it. Cloudflare decrypts
+the traffic at its edge, which EU customers are told plainly. A boxed turn has
+its own loopback, but a process that shares the home's (a bot's browser, or
+a turn when the box is off) could name any address to `:8812`. That changes
+only whose lockout its own failed codes count toward, never who is signed in.
+
+**Private, on a tailnet.** `tailscale serve --bg --https=443
+http://127.0.0.1:8080` on the server serves `https://<machine>.<tailnet>.ts.net`
+to the tailnet; set `OMB_PUBLIC_URL` to that name, and name the bridge's
+gateway in `OMB_CLOUD_TRUSTED_PROXIES` so each member's tailnet address is
+counted apart. The Admin never needs that address: its requests come through
+the agent. Not verified on a tailnet.
 
 ### Fly
 
@@ -1582,11 +1725,19 @@ measured 0.72 s) or, when Fly can't suspend it, stops it (about 20 s to wake).
 The home never stops itself. On every plan that doesn't sleep the Admin never
 calls these routes, and nothing below changes how a home behaves.
 
+Waking a suspended machine moves the wall clock on, and its pending timers keep
+the awake time they had left (measured on Fly: a 120 s timer suspended for 4
+minutes at 30 s fired 120 s of awake time after boot, not at resume). So never
+judge a pending timer by a wall-clock time stored when it was set.
+
 **What idle means (`server/cloud-power.ts`).** All of:
 
 - no turn running (bots, rooms, delegated work), no routine run queued to start
   now or running (one waiting on a person doesn't count: their answer wakes
-  the home), no Live call, no cloud computer on or starting (its idle timer
+  the home), no work one bot handed another still moving on by itself (an
+  assignment queued, running or due to resume its requester, or a report to
+  send; one parked on a person's answer doesn't count), no Live call, no cloud
+  computer on or starting (its idle timer
   lives in this process), no maintenance (backup or restore, Move to Cloud, an
   engine or browser install, a provider sign-in) and no request in progress;
 - nobody used the home for 10 minutes (the Admin may ask for another window).
@@ -1607,8 +1758,10 @@ its own nonces. `200`:
   "nextDueAt": 1792358600000, "sleeping": false, "wokeBy": { "by": "events", "background": true } }
 ```
 
-`busy` holds fixed codes only: `turn`, `run`, `live-call`, `computer`,
-`maintenance`, `recent-activity`, `recent-work`, `just-woke`, `due-soon`.
+`busy` holds fixed codes only: `turn`, `run`, `handoff`, `live-call`,
+`computer`, `maintenance`, `recent-activity`, `recent-work`, `just-woke`,
+`due-soon`. A Team Cloud answers like any other home: its plan decides whether
+the Admin ever asks.
 `nextDueAt` is the earliest enabled routine's next run or queued run's retry,
 or, while a bot waits for something (`wait_until`), 30 minutes on, so its
 checks go on that often: the Admin starts a sleeping home a minute before it
@@ -1683,8 +1836,11 @@ before the engines are read again.
 
 **`POST /api/cloud/plan`**, signed over its JSON body like the sleep request:
 `{"v":1,"cancelled":true}` when the customer cancels, `{"v":1,"cancelled":false}`
-when renewal is back on. `200 {"ok":true}`; `400 {"error":"invalid_plan"}`
-without a boolean `cancelled`. The Admin does not send it yet.
+when renewal is back on, and `{"v":1,"tier":"starter"}` for which plan this Cloud
+is on now (either or both). `200 {"ok":true}`; `400 {"error":"invalid_plan"}`
+without one of them, or with a malformed one. The tier is kept across restarts
+(`server/host/cloud-plan-tier.ts`) and counts at once; a home that was never told
+is not Starter. Bot API uses it. The Admin does not send any of this yet.
 
 ## What the desktop reads from the Admin
 

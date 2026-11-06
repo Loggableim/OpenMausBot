@@ -15,6 +15,7 @@ its database, its settings, other bots' folders and other turns' processes are n
 | put back inside it: the turn's working folder and the bot's own folder (`workspaces/<bot>`), read-write | What the turn works on, and the bot's memory and skills |
 | put back: this turn's permission socket (the engine's question and approval helper reaches the server through it), and, read-only, the conversation's own hook token folder (the hook helper's bearer, renewed each turn) and the files its command line names (MCP config, system prompt) | What the driver made for this one process |
 | private `/tmp`, `/var/tmp`, `/run`, `/dev`, `/proc` | Its own PID namespace: other turns' processes do not exist for it |
+| `/sys/devices/system/cpu/possible` and `online`, read-only; nothing else of `/sys` | The machine's CPU count. Programs built with TCMalloc (Google's Antigravity runtime) stop themselves at start without it (exit 134) |
 | a network namespace with loopback only | Two loopback ports are bridged to unix sockets from outside (below); nothing else on the machine's loopback is reachable, and there is no route out |
 
 The environment is an allow-list (`server/bot-box/env.ts`): the engine's own settings and keys, the harness capability
@@ -34,6 +35,15 @@ tokens and a few names a shell expects. Every `OMB_CLOUD_*` setting, the server'
 
 A box with the host's network (`net: "shared"`, for a browser whose Chrome already goes through its own gate) has
 neither bridge.
+
+## The sign-in relay
+
+An engine that signs in through a callback on `127.0.0.1` (Antigravity's Google sign-in) listens on the box's own
+loopback, which the server cannot reach. That box alone gets one more unix socket (`server/bot-box/relay.ts`), bound in
+at `/run/omb/relay.sock`: the in-box Node bridge dials out to it and keeps one connection waiting, and when someone
+pastes the redirect from another computer the server writes the callback's port on that connection and sends the
+request through it. Only the server ever chooses the port, the box reaches nothing new on the host, and the server never
+connects to a path inside the box.
 
 ## When it is on
 
@@ -102,7 +112,7 @@ or files, the base URL is the broker, a call with the token reaches the upstream
 | Environment allow-list | every boxed process | `OMB_CLOUD_*`, the server's placement, workspace credentials, any unlisted name | the engines' own settings |
 | Credential broker (T0b) | every boxed process with its own network | holding a provider key or an MCP header; using a token after its process or conversation ends; choosing the upstream | keys with no base-URL setting (named in the report); subscription logins |
 | seccomp filter (T0c) | every boxed process on x86-64 | 34 system calls that only reach the kernel's attack surface: mount family, kernel modules, bpf, perf, userfaultfd, the kernel keyring, `open_by_handle_at`, `setns`, kexec, reboot, swap, clock setting, I/O ports (EPERM); a process of another architecture (killed) | anything an engine, shell, git, npm, python or Chrome uses: all allowed |
-| `hidepid=invisible` on the host's /proc (T0c) | the whole machine, set by the root supervisor at boot | a `maus` process outside a box (the browser engine, a helper) listing or reading root's processes | `maus` processes seeing each other; a box has its own /proc anyway |
+| `hidepid=invisible` on the host's /proc (T0c) | the whole machine, set by the root supervisor at boot, which then starts itself again through `setpriv` without CAP_SYS_ADMIN and CAP_SETPCAP (an own server's connector grants those two only for that remount, and only to an image that drops them) | a `maus` process outside a box (the browser engine, a helper) listing or reading root's processes | `maus` processes seeing each other; a box has its own /proc anyway |
 | `/.fly` root-only (T0c) | the whole machine | a `maus` process reaching Fly's local API socket | nothing else |
 
 Not built, and why: a **separate Linux user per bot**. The server runs as `maus` under a root supervisor and cannot

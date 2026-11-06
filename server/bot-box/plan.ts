@@ -13,9 +13,11 @@
 //     bot's own SOUL.md (bots/<bot>/SOUL.md, which it may read but never write) and the engines OpenMausBot installed
 //     there, whole, since npm's bin links point into the prefix by relative paths;
 //   - a private /proc (its own PID namespace: other turns' processes do not exist for it), /dev, /tmp and /run;
+//   - of /sys, only the machine's CPU list, read-only;
 //   - a network namespace with loopback only. Two loopback ports inside are bridged to unix sockets bound in from outside:
 //     the egress gate (every connection to the internet goes through it) and the harness gate (only /api/internal/
-//     routes of this server). Nothing else on the server's loopback is reachable.
+//     routes of this server). Nothing else on the server's loopback is reachable. A box that waits for a sign-in callback
+//     also dials out to one more socket, through which the server reaches the box's own loopback, never the other way.
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export type BoxNet = "isolated" | "shared";
@@ -70,6 +72,9 @@ export interface BoxRequest {
   home?: string;
   /** Files bound read-write over their names in `home`: the team's engine sign-ins. */
   shared?: ReadonlyArray<{ source: string; target: string }>;
+  /** A host unix socket the box dials out to, so the server can reach a port the engine listens on inside the box's own
+   * network, such as a sign-in's callback. Only an isolated box has one. */
+  relay?: string;
 }
 
 export interface BoxPlan {
@@ -83,6 +88,7 @@ export interface BoxPlan {
 }
 
 export const IN_BOX_SOCKET_DIR = "/run/omb";
+export const RELAY_SOCKET_NAME = "relay";
 export const BOX_HOSTNAME = "omb-box";
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -118,6 +124,10 @@ export function argvPaths(args: readonly string[]): string[] {
 /** Environment values that name folders the engine writes: its own config and caches. */
 export const PATH_ENV_NAMES = ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "GROK_HOME", "OPENCODE_HOME", "HERMES_HOME", "GEMINI_HOME", "TMPDIR"] as const;
 
+/** The only part of /sys the box has: how many CPUs the machine has. Programs built with TCMalloc (Google's Antigravity
+ * runtime) read `possible` at start and stop themselves (SIGABRT, exit 134) when it is missing. */
+export const CPU_LIST_FILES = ["/sys/devices/system/cpu/possible", "/sys/devices/system/cpu/online"] as const;
+
 /** Folders the box always has its own copy of, so no setting may put the host's back. */
 const PRIVATE_INSIDE = ["/tmp", "/var/tmp", "/run", "/dev", "/proc"];
 
@@ -134,6 +144,7 @@ export function planBox(setup: BoxSetup, request: BoxRequest): BoxPlan {
     { kind: "ro", source: "/etc", target: "/etc" },
     { kind: "ro", source: "/opt", target: "/opt", optional: true },
     { kind: "ro", source: "/var/lib", target: "/var/lib", optional: true },
+    ...CPU_LIST_FILES.map((file): Mount => ({ kind: "ro", source: file, target: file, optional: true })),
   ];
   for (const root of setup.codeRoots) {
     const code = resolve(root);
@@ -215,6 +226,7 @@ export function planBox(setup: BoxSetup, request: BoxRequest): BoxPlan {
     options.push("--unshare-net");
     mounts.push({ kind: "dir", target: IN_BOX_SOCKET_DIR });
     for (const bridge of setup.bridges) mounts.push({ kind: "bind", source: bridge.socket, target: join(IN_BOX_SOCKET_DIR, `${bridge.name}.sock`) });
+    if (request.relay) mounts.push({ kind: "bind", source: resolve(request.relay), target: inBoxSocket(RELAY_SOCKET_NAME) });
   }
   if (cwd) options.push("--chdir", cwd);
   return { mounts, options, net, writable, botId };

@@ -45,3 +45,23 @@ export class LocalVmCapacity {
 export class LocalVmCapacityBusy extends Error {
   constructor() { super("All active desktop slots are in use; wait for a desktop to become available."); }
 }
+
+export interface LocalVmCapacityOptions<T> {
+  key: string; reserve?(): () => void; limit: number; desktops(): Promise<CapacityDesktop[]>;
+  busy(key: string): boolean; park(key: string): Promise<void>; wake(): Promise<T>; current(): boolean;
+}
+export async function runLocalVmCapacity<T>(
+  capacity: LocalVmCapacity, options: LocalVmCapacityOptions<T> & { wait?: boolean; waitMs: number; whileBusy?(): void },
+): Promise<T> {
+  const deadline = Date.now() + options.waitMs;
+  while (options.current()) {
+    options.whileBusy?.();
+    try {
+      return await capacity.run(options);
+    } catch (error) {
+      if (!(error instanceof LocalVmCapacityBusy) || !options.wait || Date.now() >= deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, 1_000));
+    }
+  }
+  throw new Error("Desktop request cancelled");
+}

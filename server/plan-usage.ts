@@ -46,6 +46,9 @@ export interface PlanWindows {
   weekly: PlanWindow;
   extra: PlanExtra[];
   models: PlanModelUsage[];
+  /** The engine's own word that sends go through now, whatever a window's percent reads: Codex keeps showing a used
+   * weekly window at 100% after a rate-limit reset credit or a plan change lifts the limit, with `allowed: true`. */
+  sendsAllowed?: boolean;
 }
 
 export interface PlanProviderRow {
@@ -59,6 +62,7 @@ export interface PlanProviderRow {
   weekly: PlanWindow;
   extra: PlanExtra[];
   models: PlanModelUsage[];
+  sendsAllowed?: boolean;
 }
 
 export interface PlanUsageReport {
@@ -206,7 +210,9 @@ export function parseCodexUsage(body: unknown): PlanWindows {
   const extra = [...assigned.extra];
   if (root) collectCodexNamedLimits(root, models, extra);
   sortModelWindows(models);
-  return { ...assigned, extra, models, plan: planLabel(root?.plan_type ?? root?.plan) };
+  const rateLimit = asRecord(root?.rate_limit);
+  const sendsAllowed = rateLimit?.allowed === true && rateLimit.limit_reached !== true;
+  return { ...assigned, extra, models, plan: planLabel(root?.plan_type ?? root?.plan), ...(sendsAllowed ? { sendsAllowed } : {}) };
 }
 
 export function parseGrokUsage(credits: unknown, billing?: unknown, settings?: unknown): PlanWindows {
@@ -916,6 +922,7 @@ function okRow(account: PlanAccount, windows: PlanWindows): PlanProviderRow {
     weekly: windows.weekly,
     extra: windows.extra,
     models: windows.models,
+    ...(windows.sendsAllowed ? { sendsAllowed: true } : {}),
   };
 }
 

@@ -33,8 +33,9 @@ export function engineLimitFromUsage(row: PlanProviderRow): EngineLimit | null {
   const full = windows.filter((line) => line.used >= 100);
   if (full.length) {
     const latest = full.reduce((left, right) => (right.resetsAt ?? 0) > (left.resetsAt ?? 0) ? right : left);
-    // Claude goes on past a full window on its paid extra usage while that has room; its own refusal still holds it.
-    return { ...base, window: latest.window, usedPercent: 100, resetsAt: full.some((line) => line.resetsAt === null) ? null : latest.resetsAt, blocked: !claudeHasExtraUsageRoom(row) };
+    // Claude goes on past a full window on its paid extra usage while that has room; Codex when its usage says sends are
+    // allowed (a reset credit leaves the window at 100%). Either engine's own refusal still holds it.
+    return { ...base, window: latest.window, usedPercent: 100, resetsAt: full.some((line) => line.resetsAt === null) ? null : latest.resetsAt, blocked: !claudeHasExtraUsageRoom(row) && row.sendsAllowed !== true };
   }
   const fullest = [...windows].sort((left, right) => right.used - left.used || (left.resetsAt ?? Infinity) - (right.resetsAt ?? Infinity))[0]!;
   return { ...base, window: fullest.window, usedPercent: fullest.used, resetsAt: fullest.resetsAt, blocked: false };

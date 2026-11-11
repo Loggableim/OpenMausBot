@@ -47,6 +47,17 @@ describe("engineLimitFromUsage", () => {
     expect(engineLimitFromUsage(claude([100, null], [20, NOW + 50 * HOUR]))).toMatchObject({ blocked: true, resetsAt: null });
   });
 
+  it("does not hold Codex at a full window its usage says still allows sends", () => {
+    const codexWeekly = (rateLimit: Record<string, unknown>) => row("codex", "codex", parseCodexUsage({
+      plan_type: "prolite",
+      rate_limit: { ...rateLimit, primary_window: { used_percent: 100, limit_window_seconds: 7 * 86400, reset_at: Math.floor((NOW + 50 * HOUR) / 1000) }, secondary_window: null },
+    }));
+    expect(engineLimitFromUsage(codexWeekly({ allowed: true, limit_reached: false }))).toMatchObject({ blocked: false, window: "weekly", usedPercent: 100, resetsAt: NOW + 50 * HOUR });
+    expect(engineLimitFromUsage(codexWeekly({ allowed: false, limit_reached: true }))).toMatchObject({ blocked: true, resetsAt: NOW + 50 * HOUR });
+    expect(engineLimitFromUsage(codexWeekly({ allowed: true, limit_reached: true }))).toMatchObject({ blocked: true });
+    expect(engineLimitFromUsage(codexWeekly({}))).toMatchObject({ blocked: true });
+  });
+
   it("does not hold Claude at a full window while its paid extra usage has room", () => {
     const withCredit = (fiveHour: number, extra: Record<string, unknown>, spend?: Record<string, unknown>) => row("claude", "claude", parseClaudeUsage({
       five_hour: { utilization: fiveHour, resets_at: iso(NOW + 2 * HOUR) },
